@@ -101,21 +101,26 @@ jobs:
               print(f'✅ 读取已推送链接，共{len(pushed_links)}条')
               return pushed_links, store_issue_id
 
-          # 推送消息到SafeW群组
+          # 推送消息到SafeW群组（确保变量替换完全生效）
           def push_to_safew(entry):
-              # 转义Markdown特殊字符（适配SafeW的Markdown解析）
               def escape_markdown(text):
                   special_chars = r"_*~`>#+-.!()"
                   for char in special_chars:
                       text = text.replace(char, f"\{char}")
                   return text
               
+              # 明确赋值变量，避免作用域问题
               escaped_title = escape_markdown(entry['title'])
               escaped_summary = escape_markdown(entry['summary'])
               escaped_link = escape_markdown(entry['link'])
+              published_time = entry['published']
               
+              # 确保f-string中所有变量都被正确引用
               message = f'''
+🔔 RSS新内容提醒
+----------------
 **标题**：{escaped_title}
+**发布时间**：{published_time}
 **摘要**：{escaped_summary}
 **链接**：{escaped_link}
               '''
