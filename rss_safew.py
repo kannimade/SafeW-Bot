@@ -5,15 +5,13 @@ import json
 import os
 import aiohttp
 
-# 从环境变量读取配置（完全沿用你的Secret名称）
-SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")  # 已有Secret
-SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")        # 已有Secret
-RSS_URL = os.getenv("RSS_FEED_URL")               # 改用你的RSS_FEED_URL
-
-# 存储已发送ID的仓库文件（不变）
+# 从环境变量读取配置（沿用你的Secret名称）
+SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
+SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
+RSS_URL = os.getenv("RSS_FEED_URL")  # 对应你的RSS_FEED_URL
 POSTS_FILE = "sent_posts.json"
 
-# 日志配置（不变）
+# 日志配置
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -41,10 +39,10 @@ def save_sent_posts(post_ids):
     except Exception as e:
         logging.error(f"保存已发送ID失败：{str(e)}")
 
-# 获取RSS更新（URL变量改为RSS_FEED_URL对应的RSS_URL）
+# 获取RSS更新（不变）
 def fetch_updates():
     try:
-        logging.info(f"获取RSS源：{RSS_URL}")  # 对应RSS_FEED_URL
+        logging.info(f"获取RSS源：{RSS_URL}")
         feed = feedparser.parse(RSS_URL)
         if feed.bozo:
             logging.error(f"RSS解析错误：{feed.bozo_exception}")
@@ -62,7 +60,7 @@ def escape_markdown(text):
         text = text.replace(char, f"\{char}")
     return text
 
-# 发送消息到SafeW（Secret名称不变）
+# 发送消息到SafeW（仅修正disable_web_page_preview参数类型）
 async def send_message(session, title, link, delay=3):
     try:
         await asyncio.sleep(delay)
@@ -71,13 +69,13 @@ async def send_message(session, title, link, delay=3):
         message = f"🔔 RSS新内容提醒\n`{escaped_title}`\n{escaped_link}"
         logging.info(f"发送消息：{message[:100]}")
         
-        # 沿用你的SAFEW_BOT_TOKEN和SAFEW_CHAT_ID
+        # 核心修正：将True改为"true"（字符串类型）
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendMessage"
         params = {
             "chat_id": SAFEW_CHAT_ID,
             "text": message,
             "parse_mode": "Markdown",
-            "disable_web_page_preview": True
+            "disable_web_page_preview": "true"  # ✅ 修正为字符串"true"
         }
         
         async with session.get(api_url, params=params) as response:
@@ -93,7 +91,7 @@ async def send_message(session, title, link, delay=3):
         logging.error(f"发送过程异常：{str(e)}")
         return False
 
-# 检查更新并推送（逻辑不变）
+# 检查更新并推送（不变）
 async def check_for_updates(sent_post_ids):
     updates = fetch_updates()
     if not updates:
