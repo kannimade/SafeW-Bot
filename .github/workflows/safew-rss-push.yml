@@ -3,7 +3,7 @@ name: SafeW - RSS监听+去重推送
 on:
   schedule:
     # 定时规则：每10分钟执行一次（Cron表达式，UTC时间）
-    - cron: '*/10 * * * *'
+    - cron: '*/1 * * * *'
   workflow_dispatch:  # 允许手动触发
 
 jobs:
@@ -125,7 +125,7 @@ jobs:
 **标题**：{entry['title']}
 **发布时间**：{entry['published']}
 **摘要**：{entry['summary']}
-**查看链接**：{entry['link']}
+**链接**：{entry['link']}
               \"""
               
               api_url = f'https://api.safew.org/bot{safew_bot_token}/sendMessage'
