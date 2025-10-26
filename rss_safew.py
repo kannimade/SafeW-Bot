@@ -115,28 +115,45 @@ def escape_markdown(text):
     return text
 
 # 发送图片消息（不变，自动适配新域名图片链接）
+from aiohttp import FormData  # 确保导入FormData
+
 async def send_photo(session, image_url, caption, delay=5):
     try:
         await asyncio.sleep(delay)
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendPhoto"
-        payload = {
-            "chat_id": SAFEW_CHAT_ID,
-            "photo": image_url,
-            "caption": caption,
-            "parse_mode": "Markdown",
-            "disable_notification": False
-        }
         
-        async with session.post(api_url, json=payload) as response:
+        # 1. 按文档要求构建multipart/form-data表单
+        form = FormData()
+        # 必选参数：chat_id（目标群组ID）
+        form.add_field("chat_id", SAFEW_CHAT_ID)
+        # 必选参数：photo（HTTP URL字符串，符合文档String类型要求）
+        form.add_field("photo", image_url)
+        # 可选参数：caption（图片下方文本）
+        form.add_field("caption", caption)
+        # 可选参数：parse_mode（文档支持Markdown格式）
+        form.add_field("parse_mode", "Markdown")
+        # 可选参数：禁用通知（按需求设置）
+        form.add_field("disable_notification", "false")
+        
+        # 2. 发送POST请求（用data=form确保Content-Type为multipart/form-data）
+        async with session.post(api_url, data=form) as response:
             response_text = await response.text() or "无响应内容"
             if response.status == 200:
-                logging.info(f"✅ 图片发送成功：{image_url[:50]}...")
+                logging.info(f"✅ 图片发送成功（文档适配）：{image_url[:50]}...")
                 return True
             else:
-                logging.error(f"❌ 图片发送失败（{image_url[:50]}）：状态码{response.status}，响应{response_text[:200]}")
+                # 按文档错误码提示排查
+                if response.status == 400:
+                    logging.error(f"❌ 400错误（文档核对）：1. photo URL是否有效 2. caption是否超长（≤1024字符） 3. 参数格式是否正确\n响应：{response_text}")
+                elif response.status == 401:
+                    logging.error(f"❌ 401错误（文档核对）：Token无效，检查SAFEW_BOT_TOKEN")
+                elif response.status == 403:
+                    logging.error(f"❌ 403错误（文档核对）：Bot无权限发送消息到该群组，检查chat_id是否正确")
+                else:
+                    logging.error(f"❌ 发送失败：状态码{response.status}，响应{response_text[:200]}")
                 return False
     except Exception as e:
-        logging.error(f"❌ 图片发送异常（{image_url[:50]}）：{str(e)}")
+        logging.error(f"❌ 图片发送异常：{str(e)}")
         return False
 
 # 发送纯文本消息（核心修改：移除【图片】占位符）
