@@ -1,55 +1,41 @@
-name: RSS to SafeW（新域名tyw29.cc适配）
+name: RSS to SafeW
 on:
-  # 定时触发（每10分钟运行一次，可调整）
   schedule:
     - cron: "*/10 * * * *"
-  # 手动触发（测试用）
   workflow_dispatch:
 
 jobs:
-  push_rss:
+  run:
     runs-on: ubuntu-latest
     steps:
-      # 1. 拉取仓库代码（带PAT权限，用于提交去重记录）
-      - name: 拉取仓库代码
+      - name: 拉取代码
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.RSS_GITHUB_PAT }}  # 你的GitHub PAT（需repo权限）
-          fetch-depth: 0  # 获取完整历史，避免提交冲突
-          ref: main       # 仓库主分支（若用master需修改）
+          token: ${{ secrets.RSS_GITHUB_PAT }}
+          fetch-depth: 0
 
-      # 2. 设置Python环境（3.10+兼容所有依赖）
-      - name: 设置Python环境
+      - name: 设置Python（解决缓存报错）
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-          cache: "pip"  # 缓存pip依赖，加速安装
+          cache: pip  # 现在能找到requirements.txt，缓存正常
+          cache-dependency-path: requirements.txt  # 明确指定依赖文件路径
 
-      # 3. 安装依赖（指定兼容版本，避免FormData异常）
-      - name: 安装依赖（强制兼容版本）
+      - name: 安装依赖（通过requirements.txt）
         run: |
           pip install --upgrade pip
-          # 关键：aiohttp≥3.8.0（支持FormData手动boundary），beautifulsoup4≥4.12.0
-          pip install feedparser aiohttp>=3.8.0 beautifulsoup4>=4.12.0
-          # 验证依赖版本
-          echo "依赖版本验证："
-          pip list | grep -E "aiohttp|beautifulsoup4|feedparser"
+          pip install -r requirements.txt  # 从依赖清单安装，版本统一
 
-      # 4. 运行推送脚本（传递Secrets配置）
-      - name: 运行SafeW RSS推送脚本
+      - name: 运行脚本
         env:
-          SAFEW_BOT_TOKEN: ${{ secrets.SAFEW_BOT_TOKEN }}  # SafeW机器人令牌
-          SAFEW_CHAT_ID: ${{ secrets.SAFEW_CHAT_ID }}      # 目标群组ID：10000294405
-          RSS_FEED_URL: ${{ secrets.RSS_FEED_URL }}        # 新域名对应的RSS源
+          SAFEW_BOT_TOKEN: ${{ secrets.SAFEW_BOT_TOKEN }}
+          SAFEW_CHAT_ID: ${{ secrets.SAFEW_CHAT_ID }}
+          RSS_FEED_URL: ${{ secrets.RSS_FEED_URL }}
         run: python rss_safew.py
 
-      # 5. 提交更新后的去重记录（仅提交sent_posts.json）
-      - name: 提交去重记录到仓库
+      - name: 提交去重记录
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "更新RSS推送去重记录（新域名tyw29.cc）"
-          file_pattern: "sent_posts.json"  # 仅提交去重记录文件
-          branch: main                     # 主分支（与拉取分支一致）
-          commit_user_name: "GitHub Actions"
-          commit_user_email: "actions@github.com"
-          push_options: "--force-with-lease"  # 安全推送，避免冲突
+          commit_message: "更新推送记录"
+          file_pattern: "sent_posts.json"
+          branch: main
