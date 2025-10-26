@@ -78,9 +78,76 @@ def fetch_updates():
         return None
 
 # ====================== 网页图片提取（适配新域名tyw29.cc）======================
-from aiohttp import FormData
+async def get_images_from_webpage(session, webpage_url):
+    """从帖子页面提取图片（修复相对路径+支持懒加载）"""
+    try:
+        # 强化请求头（模拟浏览器，解决反爬）
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": webpage_url,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
+        }
+        
+        # 请求网页HTML
+        async with session.get(webpage_url, headers=headers, timeout=20) as resp:
+            if resp.status != 200:
+                logging.warning(f"帖子页面请求失败（状态码：{resp.status}）：{webpage_url}")
+                return []
+            html = await resp.text()
+        
+        # 解析HTML，定位目标div（匹配日志中的class="message break-all" isfirst="1"）
+        soup = BeautifulSoup(html, "html.parser")
+        target_divs = soup.find_all("div", class_="message break-all", isfirst="1")
+        logging.info(f"找到目标div数量：{len(target_divs)}")
+        if not target_divs:
+            return []
+        
+        # 提取图片（处理相对路径和懒加载）
+        images = []
+        base_domain = "/".join(webpage_url.split("/")[:3])  # 动态获取域名（如https://tyw29.cc）
+        for div in target_divs:
+            img_tags = div.find_all("img")
+            logging.info(f"目标div中找到{len(img_tags)}个img标签")
+            
+            for img in img_tags:
+                # 优先取data-src（懒加载图片），再取src
+                img_url = img.get("data-src", "").strip() or img.get("src", "").strip()
+                # 过滤无效链接（空值、base64、js链接）
+                if not img_url or img_url.startswith(("data:image/", "javascript:")):
+                    continue
+                
+                # 处理相对路径（两种情况：带/和不带/）
+                if img_url.startswith("/"):
+                    img_url = f"{base_domain}{img_url}"  # 如/upload/xxx → https://tyw29.cc/upload/xxx
+                elif not img_url.startswith(("http://", "https://")):
+                    img_url = f"{base_domain}/{img_url}"  # 如upload/xxx → https://tyw29.cc/upload/xxx
+                
+                # 验证有效HTTP链接并去重
+                if img_url.startswith(("http://", "https://")) and img_url not in images:
+                    images.append(img_url)
+                    logging.info(f"✅ 提取到图片：{img_url[:60]}...")
+        
+        if images:
+            logging.info(f"从{webpage_url}成功提取{len(images)}张图片")
+            return images[:1]  # 仅取第一张图片
+        else:
+            logging.warning(f"找到img标签但未提取到有效图片：{webpage_url}")
+            return []
+    except Exception as e:
+        logging.error(f"提取图片异常：{str(e)}")
+        return []
 
-# 发送图片消息（最终稳定版）
+# ====================== Markdown特殊字符转义（避免格式错误）======================
+def escape_markdown(text):
+    """转义Markdown特殊字符（_*~`>#+-.!()）"""
+    special_chars = r"_*~`>#+-.!()"
+    for char in special_chars:
+        if char in text:
+            text = text.replace(char, f"\{char}")
+    return text
+
+# ====================== 图片发送（最终稳定版，修复_boundary问题）======================
 async def send_photo(session, image_url, delay=5):
     try:
         await asyncio.sleep(delay)
@@ -110,52 +177,6 @@ async def send_photo(session, image_url, delay=5):
                     if retry_resp.status == 200:
                         logging.info(f"✅ 补充caption后发送成功")
                         return True
-                return False
-    except Exception as e:
-        logging.error(f"❌ 图片发送异常：{str(e)}")
-        return False
-
-# ====================== Markdown特殊字符转义（避免格式错误）======================
-def escape_markdown(text):
-    """转义Markdown特殊字符（_*~`>#+-.!()）"""
-    special_chars = r"_*~`>#+-.!()"
-    for char in special_chars:
-        if char in text:
-            text = text.replace(char, f"\{char}")
-    return text
-
-# ====================== 图片发送（强制multipart/form-data格式，解决400错误）======================
-async def send_photo(session, image_url, delay=5):
-    """发送图片到SafeW（按文档要求用multipart/form-data，手动控制Content-Type）"""
-    try:
-        await asyncio.sleep(delay)  # 间隔避免频率限制
-        api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendPhoto"
-        
-        # 1. 构建FormData（仅保留必选参数，排除干扰）
-        form = FormData(charset="utf-8")  # 明确编码，避免乱码
-        form.add_field("chat_id", SAFEW_CHAT_ID)  # 必选：群组ID（确保为字符串）
-        form.add_field("photo", image_url)        # 必选：图片URL（已验证有效性）
-        
-        # 2. 手动构造Content-Type（含boundary，解决自动设置失效问题）
-        boundary = form._boundary.decode("utf-8")  # 提取FormData自动生成的分隔符
-        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-        
-        # 3. 发送POST请求（强制指定headers，延长超时）
-        logging.info(f"正在发送图片：{image_url[:60]}...（API地址：{api_url[:60]}...）")
-        async with session.post(
-            api_url,
-            data=form,
-            headers=headers,
-            timeout=20
-        ) as response:
-            response_text = await response.text() or "无响应内容"
-            
-            # 处理响应结果
-            if response.status == 200:
-                logging.info(f"✅ 图片发送成功：{image_url[:50]}...")
-                return True
-            else:
-                logging.error(f"❌ 图片发送失败（状态码：{response.status}）\n排查指引：\n1. 图片URL测试：{image_url}（复制到浏览器打开）\n2. 群组ID验证：{SAFEW_CHAT_ID}（确认是目标群组ID）\n3. 响应详情：{response_text}")
                 return False
     except Exception as e:
         logging.error(f"❌ 图片发送异常：{str(e)}")
