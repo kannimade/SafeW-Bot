@@ -78,78 +78,66 @@ def fetch_updates():
         return None
 
 # ====================== 网页图片提取（适配新域名tyw29.cc）======================
-# 异步爬取网页HTML并提取图片（优化版：适配更多场景）
 async def get_images_from_webpage(session, webpage_url):
     try:
-        # 1. 强化请求头（模拟真实浏览器，解决反爬/登录验证问题）
+        # 强化请求头（模拟浏览器）
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Referer": webpage_url,  # Referer设为当前帖子URL，而非首页
+            "Referer": webpage_url,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
-            # 若帖子需登录才能看图片，可添加Cookie（替换为你的登录Cookie）
-            # "Cookie": "your_login_cookie=xxx; other_cookie=xxx"
+            "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
         }
         
-        # 2. 请求网页并获取HTML
+        # 请求网页
         async with session.get(webpage_url, headers=headers, timeout=20) as resp:
             if resp.status != 200:
-                logging.warning(f"帖子页面请求失败（状态码：{resp.status}）：{webpage_url}")
+                logging.warning(f"帖子请求失败（{resp.status}）：{webpage_url}")
                 return []
             html = await resp.text()
-            logging.info(f"成功获取帖子HTML（长度：{len(html)}字符）：{webpage_url}")
         
-        # 3. 解析HTML：优化div选择器（放宽条件，优先找图片所在容器）
+        # 解析HTML
         soup = BeautifulSoup(html, "html.parser")
-        
-        # 关键修改1：放宽div选择器（先按class找，去掉isfirst属性限制，或调整属性名）
-        # 尝试1：找所有class含"message break-all"的div（可能class有空格/变体）
-        target_divs = soup.find_all("div", class_=lambda c: c and "message" in c and "break-all" in c)
-        # 尝试2：若没找到，找class含"post-content"或"content"的div（常见帖子内容容器）
+        # 找到目标div（匹配日志中的class="message break-all" isfirst="1"）
+        target_divs = soup.find_all("div", class_="message break-all", isfirst="1")
+        logging.info(f"找到目标div数量：{len(target_divs)}")
         if not target_divs:
-            target_divs = soup.find_all("div", class_=lambda c: c and ("post-content" in c or "content" in c))
-        
-        logging.info(f"找到符合条件的内容div数量：{len(target_divs)}")
-        if not target_divs:
-            logging.warning(f"未找到帖子内容div，无法提取图片：{webpage_url}")
             return []
         
-        # 4. 提取图片：支持src和data-src（解决懒加载问题）
+        # 提取图片（修正逻辑顺序）
         images = []
-        base_domain = "/".join(webpage_url.split("/")[:3])  # 动态拼接域名
+        base_domain = "/".join(webpage_url.split("/")[:3])  # 如https://tyw29.cc
         for div in target_divs:
-            # 提取div内所有img标签（包括隐藏的）
             img_tags = div.find_all("img")
-            logging.info(f"第{target_divs.index(div)+1}个div中找到{len(img_tags)}个img标签")
+            logging.info(f"目标div中找到{len(img_tags)}个img标签")
             
             for img in img_tags:
-                # 优先取data-src（懒加载图片常用），再取src
+                # 1. 获取图片地址（data-src优先）
                 img_url = img.get("data-src", "").strip() or img.get("src", "").strip()
-                # 过滤无效链接（排除占位图、base64图片）
-                if not img_url:
-                    continue
-                if img_url.startswith(("data:image/", "javascript:")):
+                # 2. 过滤无效值
+                if not img_url or img_url.startswith(("data:image/", "javascript:")):
                     continue
                 
-                # 处理相对路径
+                # 3. 核心修正：先处理相对路径（两种情况都适配）
                 if img_url.startswith("/"):
+                    # 情况1：/upload/xxx.jpg → 拼接域名
                     img_url = f"{base_domain}{img_url}"
-                # 确保是HTTP/HTTPS链接
+                elif not img_url.startswith(("http://", "https://")):
+                    # 情况2：upload/xxx.jpg（无开头/）→ 拼接域名+/"
+                    img_url = f"{base_domain}/{img_url}"
+                
+                # 4. 验证有效HTTP链接，去重添加
                 if img_url.startswith(("http://", "https://")) and img_url not in images:
                     images.append(img_url)
-                    logging.info(f"提取到图片URL：{img_url[:60]}...")
+                    logging.info(f"✅ 提取到图片：{img_url[:60]}...")
         
-        # 5. 日志补充：明确图片提取结果
         if images:
-            logging.info(f"从帖子{webpage_url}成功提取到{len(images)}张图片")
-            return images[:2]  # 最多取2张，避免刷屏
+            logging.info(f"从{webpage_url}成功提取{len(images)}张图片")
+            return images[:1]  # 仅取第一张
         else:
-            # 打印div内容片段（便于排查结构）
-            div_sample = str(target_divs[0])[:500]  # 只打印前500字符
-            logging.warning(f"找到内容div但未提取到图片，div内容片段：{div_sample}...")
+            logging.warning(f"找到img标签但未提取到有效图片：{webpage_url}")
             return []
     except Exception as e:
-        logging.error(f"提取图片异常（{webpage_url}）：{str(e)}")
+        logging.error(f"提取图片异常：{str(e)}")
         return []
 
 # ====================== Markdown特殊字符转义（避免格式错误）======================
