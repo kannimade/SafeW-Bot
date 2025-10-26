@@ -1,45 +1,39 @@
 name: RSS to SafeW
 on:
   schedule:
-    - cron: "*/2 * * * *"  # 每2分钟运行一次（可按需调整）
+    - cron: "*/10 * * * *"  # 每10分钟运行一次
   workflow_dispatch:  # 允许手动触发
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      # 拉取代码：用你的RSS_GITHUB_PAT替代原MY_GITHUB_TOKEN
       - name: 拉取仓库代码
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.RSS_GITHUB_PAT }}  # 沿用你的RSS_GITHUB_PAT
+          token: ${{ secrets.RSS_GITHUB_PAT }}
           fetch-depth: 0
 
-      # 设置Python环境（不变）
       - name: 设置Python环境
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # 安装依赖（不变）
-      - name: 安装依赖
-        run: pip install feedparser aiohttp
+      - name: 安装依赖（新增beautifulsoup4）
+        run: pip install feedparser aiohttp beautifulsoup4
 
-      # 运行脚本：传递你已有的4个Secret（仅调整RSS_URL为RSS_FEED_URL）
       - name: 运行SafeW推送脚本
         env:
-          SAFEW_BOT_TOKEN: ${{ secrets.SAFEW_BOT_TOKEN }}  # 已有Secret
-          SAFEW_CHAT_ID: ${{ secrets.SAFEW_CHAT_ID }}      # 已有Secret
-          RSS_FEED_URL: ${{ secrets.RSS_FEED_URL }}        # 已有Secret（替换原RSS_URL）
+          SAFEW_BOT_TOKEN: ${{ secrets.SAFEW_BOT_TOKEN }}
+          SAFEW_CHAT_ID: ${{ secrets.SAFEW_CHAT_ID }}
+          RSS_FEED_URL: ${{ secrets.RSS_FEED_URL }}
         run: python rss_safew.py
 
-      # 提交文件：用你的RSS_GITHUB_PAT确保权限
       - name: 提交更新后的ID文件
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: "更新已发送的帖子ID"
           file_pattern: "sent_posts.json"
-          branch: main  # 确保与你的主分支一致
+          branch: main
           commit_user_name: "GitHub Actions"
           commit_user_email: "actions@github.com"
-          # 自动继承上方的RSS_GITHUB_PAT权限，无需额外配置
