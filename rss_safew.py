@@ -78,67 +78,42 @@ def fetch_updates():
         return None
 
 # ====================== 网页图片提取（适配新域名tyw29.cc）======================
-async def get_images_from_webpage(session, webpage_url):
+from aiohttp import FormData
+
+# 发送图片消息（最终稳定版）
+async def send_photo(session, image_url, delay=5):
     try:
-        # 强化请求头（模拟浏览器）
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Referer": webpage_url,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
-        }
+        await asyncio.sleep(delay)
+        api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendPhoto"
         
-        # 请求网页
-        async with session.get(webpage_url, headers=headers, timeout=20) as resp:
-            if resp.status != 200:
-                logging.warning(f"帖子请求失败（{resp.status}）：{webpage_url}")
-                return []
-            html = await resp.text()
+        # 构建FormData（必选参数）
+        form = FormData(charset="utf-8")
+        form.add_field("chat_id", SAFEW_CHAT_ID)  # 目标群组ID
+        form.add_field("photo", image_url)        # 完整图片URL（已验证有效）
         
-        # 解析HTML
-        soup = BeautifulSoup(html, "html.parser")
-        # 找到目标div（匹配日志中的class="message break-all" isfirst="1"）
-        target_divs = soup.find_all("div", class_="message break-all", isfirst="1")
-        logging.info(f"找到目标div数量：{len(target_divs)}")
-        if not target_divs:
-            return []
-        
-        # 提取图片（修正逻辑顺序）
-        images = []
-        base_domain = "/".join(webpage_url.split("/")[:3])  # 如https://tyw29.cc
-        for div in target_divs:
-            img_tags = div.find_all("img")
-            logging.info(f"目标div中找到{len(img_tags)}个img标签")
-            
-            for img in img_tags:
-                # 1. 获取图片地址（data-src优先）
-                img_url = img.get("data-src", "").strip() or img.get("src", "").strip()
-                # 2. 过滤无效值
-                if not img_url or img_url.startswith(("data:image/", "javascript:")):
-                    continue
-                
-                # 3. 核心修正：先处理相对路径（两种情况都适配）
-                if img_url.startswith("/"):
-                    # 情况1：/upload/xxx.jpg → 拼接域名
-                    img_url = f"{base_domain}{img_url}"
-                elif not img_url.startswith(("http://", "https://")):
-                    # 情况2：upload/xxx.jpg（无开头/）→ 拼接域名+/"
-                    img_url = f"{base_domain}/{img_url}"
-                
-                # 4. 验证有效HTTP链接，去重添加
-                if img_url.startswith(("http://", "https://")) and img_url not in images:
-                    images.append(img_url)
-                    logging.info(f"✅ 提取到图片：{img_url[:60]}...")
-        
-        if images:
-            logging.info(f"从{webpage_url}成功提取{len(images)}张图片")
-            return images[:1]  # 仅取第一张
-        else:
-            logging.warning(f"找到img标签但未提取到有效图片：{webpage_url}")
-            return []
+        # 自动处理Content-Type和boundary，无需手动干预
+        async with session.post(
+            api_url,
+            data=form,
+            timeout=20  # 延长超时，应对图片加载延迟
+        ) as response:
+            response_text = await response.text() or "无响应内容"
+            if response.status == 200:
+                logging.info(f"✅ 图片发送成功：{image_url[:50]}...")
+                return True
+            else:
+                logging.error(f"❌ 图片发送失败：状态码{response.status}，响应{response_text}")
+                # 兼容处理：部分API要求caption非空
+                form.add_field("caption", "帖子相关图片")
+                async with session.post(api_url, data=form, timeout=20) as retry_resp:
+                    retry_text = await retry_resp.text() or "无响应内容"
+                    if retry_resp.status == 200:
+                        logging.info(f"✅ 补充caption后发送成功")
+                        return True
+                return False
     except Exception as e:
-        logging.error(f"提取图片异常：{str(e)}")
-        return []
+        logging.error(f"❌ 图片发送异常：{str(e)}")
+        return False
 
 # ====================== Markdown特殊字符转义（避免格式错误）======================
 def escape_markdown(text):
