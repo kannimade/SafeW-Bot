@@ -2,7 +2,7 @@ name: RSS to SafeW
 on:
   schedule:
     - cron: "*/10 * * * *"  # 每10分钟运行一次
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   run:
@@ -19,8 +19,21 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: 安装依赖（新增beautifulsoup4）
-        run: pip install feedparser aiohttp beautifulsoup4
+      # 新增：清除pip缓存，避免旧缓存影响
+      - name: 清除pip缓存
+        run: pip cache purge
+
+      # 强制安装所有依赖（包括beautifulsoup4）
+      - name: 安装依赖（含bs4）
+        run: |
+          pip install --upgrade pip  # 升级pip确保安装正常
+          pip install feedparser aiohttp beautifulsoup4
+
+      # 新增：验证依赖是否安装成功（关键调试步骤）
+      - name: 检查bs4是否安装
+        run: |
+          pip list | grep beautifulsoup4  # 输出安装的版本，确认是否存在
+          python -c "from bs4 import BeautifulSoup; print('bs4导入成功')"  # 验证能否导入
 
       - name: 运行SafeW推送脚本
         env:
