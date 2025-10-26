@@ -1,0 +1,44 @@
+name: RSS to SafeW
+on:
+  schedule:
+    - cron: "*/2 * * * *"  # 每2分钟运行一次（可按需调整）
+  workflow_dispatch:  # 允许手动触发测试
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 拉取仓库代码（保持原逻辑，确保获取最新的sent_posts.json）
+      - name: 拉取仓库代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.MY_GITHUB_TOKEN }}  # 后续配置的仓库操作令牌
+          fetch-depth: 0  # 获取完整历史，避免提交冲突
+
+      # 2. 设置Python环境（与原方案一致）
+      - name: 设置Python环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"  # 适配aiohttp等依赖
+
+      # 3. 安装依赖（替换telegram库为aiohttp）
+      - name: 安装依赖
+        run: pip install feedparser aiohttp  # 移除python-telegram-bot，新增aiohttp
+
+      # 4. 运行脚本（环境变量替换为SafeW相关）
+      - name: 运行SafeW推送脚本
+        env:
+          SAFEW_BOT_TOKEN: ${{ secrets.SAFEW_BOT_TOKEN }}  # SafeW机器人令牌
+          SAFEW_CHAT_ID: ${{ secrets.SAFEW_CHAT_ID }}      # SafeW目标群组ID
+          RSS_URL: ${{ secrets.RSS_URL }}                  # 监听的RSS源地址
+        run: python rss_safew.py  # 运行适配SafeW的脚本
+
+      # 5. 提交更新后的ID文件（完全复用原逻辑，确保去重记录持久化）
+      - name: 提交更新后的ID文件
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "更新已发送的帖子ID"
+          file_pattern: "sent_posts.json"  # 仅提交去重记录文件
+          branch: main  # 确保与你的仓库主分支名称一致（如main/master）
+          commit_user_name: "GitHub Actions"
+          commit_user_email: "actions@github.com"
