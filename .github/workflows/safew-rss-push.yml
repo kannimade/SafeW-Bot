@@ -100,10 +100,8 @@ jobs:
 
           def push_to_safew(entry):
               message = f'''
-🔔 RSS新内容提醒
-----------------
+
 **标题**：{entry['title']}
-**发布时间**：{entry['published']}
 **摘要**：{entry['summary']}
 **链接**：{entry['link']}
               '''
