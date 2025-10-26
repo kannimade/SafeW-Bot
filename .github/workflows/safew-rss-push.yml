@@ -1,0 +1,209 @@
+name: SafeW - RSS监听+去重推送
+# 触发条件：1.定时触发 2.手动触发（便于测试）
+on:
+  schedule:
+    # 定时规则：每10分钟执行一次（Cron表达式，UTC时间，比北京时间晚8小时）
+    # 北京时间每10分钟：0/10 * * * * → UTC时间需减8小时，即 16/10 * * * *
+    - cron: '*/10 * * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  rss-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装Python依赖
+        run: |
+          pip install --upgrade requests feedparser  # feedparser解析RSS，requests调用API
+      
+      - name: 执行RSS监听+去重推送脚本
+        env:
+          # 1. SafeW相关密钥（已适配你的信息）
+          SAFEW_BOT_TOKEN: ${{ secrets.SAFEW_BOT_TOKEN }}
+          SAFEW_CHAT_ID: ${{ secrets.SAFEW_CHAT_ID }}
+          # 2. GitHub去重存储相关（需后续配置）
+          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+          GITHUB_REPO: ${{ github.repository }}  # 自动获取当前仓库（格式：用户名/仓库名）
+          STORE_ISSUE_TITLE: "已推送RSS链接记录"  # 存储去重链接的Issue标题（固定）
+          # 3. 需自定义：你的RSS源地址（替换为实际要监听的RSS）
+          RSS_FEED_URL: "https://example.com/rss.xml"
+        run: |
+          python -c "
+          import os
+          import requests
+          import feedparser
+          from datetime import datetime
+
+          # -------------------------- 1. 配置参数读取 --------------------------
+          # SafeW配置
+          safew_bot_token = os.getenv('SAFEW_BOT_TOKEN')
+          safew_chat_id = os.getenv('SAFEW_CHAT_ID')
+          # GitHub配置（去重存储）
+          github_pat = os.getenv('GITHUB_PAT')
+          github_repo = os.getenv('GITHUB_REPO')
+          store_issue_title = os.getenv('STORE_ISSUE_TITLE')
+          # RSS配置
+          rss_feed_url = os.getenv('RSS_FEED_URL')
+
+          # GitHub API请求头（带认证）
+          github_headers = {
+              'Authorization': f'token {github_pat}',
+              'Accept': 'application/vnd.github.v3+json'
+          }
+
+          # -------------------------- 2. 解析RSS源 --------------------------
+          def parse_rss():
+              \"\"\"解析RSS源，返回最新条目列表（按发布时间倒序）\"\"\"
+              try:
+                  feed = feedparser.parse(rss_feed_url)
+                  if feed.bozo != 0:  # RSS解析失败
+                      print(f'❌ RSS解析失败：{feed.bozo_exception}')
+                      return []
+                  # 提取关键信息：标题、链接、摘要、发布时间
+                  entries = []
+                  for entry in feed.entries:
+                      entry_data = {
+                          'title': entry.get('title', '无标题'),
+                          'link': entry.get('link', ''),  # 链接作为去重唯一标识
+                          'summary': entry.get('summary', '无摘要')[:150] + '...' if len(entry.get('summary', '')) > 150 else entry.get('summary', '无摘要'),
+                          'published': entry.get('published', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                      }
+                      entries.append(entry_data)
+                  print(f'✅ 成功解析RSS，共获取{len(entries)}条条目')
+                  return entries
+              except Exception as e:
+                  print(f'❌ RSS解析异常：{str(e)}')
+                  return []
+
+          # -------------------------- 3. 读取已推送链接（去重列表） --------------------------
+          def get_pushed_links():
+              \"\"\"从GitHub Issues中读取已推送链接，返回链接集合\"\"\"
+              # 1. 搜索存储用的Issue（按标题匹配）
+              search_url = f'https://api.github.com/search/issues?q=repo:{github_repo}+title:"{store_issue_title}"+state:open'
+              response = requests.get(search_url, headers=github_headers)
+              if response.status_code != 200:
+                  print(f'❌ 搜索存储Issue失败：{response.text}')
+                  return set()
+              
+              search_result = response.json()
+              if search_result['total_count'] == 0:
+                  # 若不存在，创建一条新Issue作为存储
+                  create_url = f'https://api.github.com/repos/{github_repo}/issues'
+                  create_data = {
+                      'title': store_issue_title,
+                      'body': '# 已推送RSS链接记录\\n\\n以下为已推送的RSS链接，每行一个，用于去重：\\n',
+                      'labels': ['rss-store']  # 标记为存储用Issue
+                  }
+                  create_resp = requests.post(create_url, headers=github_headers, json=create_data)
+                  if create_resp.status_code == 201:
+                      print(f'✅ 首次运行，创建存储Issue成功')
+                      return set()
+                  else:
+                      print(f'❌ 创建存储Issue失败：{create_resp.text}')
+                      return set()
+              
+              # 2. 读取已有Issue的内容，提取链接
+              store_issue_id = search_result['items'][0]['number']
+              issue_url = f'https://api.github.com/repos/{github_repo}/issues/{store_issue_id}'
+              issue_resp = requests.get(issue_url, headers=github_headers)
+              if issue_resp.status_code != 200:
+                  print(f'❌ 获取存储Issue内容失败：{issue_resp.text}')
+                  return set()
+              
+              issue_body = issue_resp.json()['body']
+              # 提取所有链接（按行分割，过滤空行和非链接行）
+              pushed_links = set()
+              for line in issue_body.split('\\n'):
+                  line = line.strip()
+                  if line.startswith('http'):
+                      pushed_links.add(line)
+              print(f'✅ 读取已推送链接，共{len(pushed_links)}条')
+              return pushed_links, store_issue_id
+
+          # -------------------------- 4. 推送新内容至SafeW --------------------------
+          def push_to_safew(entry):
+              \"\"\"调用SafeW Bot推送单条RSS条目\"\"\"
+              message = f\"""
+🔔 RSS新内容提醒
+----------------
+**标题**：{entry['title']}
+**发布时间**：{entry['published']}
+**摘要**：{entry['summary']}
+**查看链接**：{entry['link']}
+              \"""
+              
+              api_url = f'https://api.safew.org/bot{safew_bot_token}/sendMessage'
+              params = {
+                  'chat_id': safew_chat_id,
+                  'text': message,
+                  'parse_mode': 'Markdown',
+                  'disable_web_page_preview': True
+              }
+              
+              response = requests.post(api_url, params=params)
+              if response.status_code == 200:
+                  print(f'✅ 推送成功：{entry["title"]}')
+                  return True
+              else:
+                  print(f'❌ 推送失败：{entry["title"]}，响应：{response.text}')
+                  return False
+
+          # -------------------------- 5. 更新已推送链接（追加到Issue） --------------------------
+          def update_pushed_links(store_issue_id, new_links):
+              \"\"\"将新推送的链接追加到存储Issue中\"\"\"
+              if not new_links:
+                  return
+              
+              # 获取当前Issue内容
+              issue_url = f'https://api.github.com/repos/{github_repo}/issues/{store_issue_id}'
+              issue_resp = requests.get(issue_url, headers=github_headers)
+              if issue_resp.status_code != 200:
+                  print(f'❌ 更新存储失败：无法获取Issue内容')
+                  return
+              
+              current_body = issue_resp.json()['body']
+              # 追加新链接（每行一个）
+              new_links_text = '\\n'.join(new_links)
+              updated_body = f'{current_body}\\n{new_links_text}'
+              
+              # 更新Issue
+              update_url = f'https://api.github.com/repos/{github_repo}/issues/{store_issue_id}'
+              update_data = {'body': updated_body}
+              update_resp = requests.patch(update_url, headers=github_headers, json=update_data)
+              if update_resp.status_code == 200:
+                  print(f'✅ 已更新存储，新增{len(new_links)}条链接')
+              else:
+                  print(f'❌ 更新存储失败：{update_resp.text}')
+
+          # -------------------------- 主流程执行 --------------------------
+          def main():
+              # 1. 解析RSS
+              rss_entries = parse_rss()
+              if not rss_entries:
+                  return
+              
+              # 2. 读取已推送链接和存储Issue ID
+              pushed_links, store_issue_id = get_pushed_links()
+              
+              # 3. 筛选未推送的条目（按link去重）
+              new_entries = []
+              for entry in rss_entries:
+                  if entry['link'] not in pushed_links and entry['link'] != '':
+                      new_entries.append(entry)
+              if not new_entries:
+                  print(f'ℹ️  无新内容可推送，结束执行')
+                  return
+              print(f'✅ 筛选出未推送条目：{len(new_entries)}条')
+              
+              # 4. 推送新条目并收集成功的链接
+              success_links = []
+              for entry in new_entries[:5]:  # 限制单次最多推送5条，避免刷屏
+                  if push_to_safew(entry):
+                      success_links.append(entry['link'])
+              
+              # 5. 更新已推送链接存储
+              if success_links:
+                  update_pushed_links(store_issue_id, success_links)
+
+          if __name__ == '__main__':
+              main()
+          "
