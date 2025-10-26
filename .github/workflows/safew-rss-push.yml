@@ -26,6 +26,7 @@ jobs:
           import feedparser
           from datetime import datetime
 
+          # 配置参数读取
           safew_bot_token = os.getenv('SAFEW_BOT_TOKEN')
           safew_chat_id = os.getenv('SAFEW_CHAT_ID')
           github_pat = os.getenv('RSS_GITHUB_PAT')
@@ -38,6 +39,7 @@ jobs:
               'Accept': 'application/vnd.github.v3+json'
           }
 
+          # 解析RSS源
           def parse_rss():
               try:
                   feed = feedparser.parse(rss_feed_url)
@@ -59,6 +61,7 @@ jobs:
                   print(f'❌ RSS解析异常：{str(e)}')
                   return []
 
+          # 读取已推送链接（GitHub Issues去重）
           def get_pushed_links():
               search_url = f'https://api.github.com/search/issues?q=repo:{github_repo}+title:"{store_issue_title}"+state:open'
               response = requests.get(search_url, headers=github_headers)
@@ -98,12 +101,23 @@ jobs:
               print(f'✅ 读取已推送链接，共{len(pushed_links)}条')
               return pushed_links, store_issue_id
 
+          # 推送消息到SafeW群组
           def push_to_safew(entry):
+              # 转义Markdown特殊字符（适配SafeW的Markdown解析）
+              def escape_markdown(text):
+                  special_chars = r"_*~`>#+-.!()"
+                  for char in special_chars:
+                      text = text.replace(char, f"\{char}")
+                  return text
+              
+              escaped_title = escape_markdown(entry['title'])
+              escaped_summary = escape_markdown(entry['summary'])
+              escaped_link = escape_markdown(entry['link'])
+              
               message = f'''
-
-**标题**：{entry['title']}
-**摘要**：{entry['summary']}
-**链接**：{entry['link']}
+**标题**：{escaped_title}
+**摘要**：{escaped_summary}
+**链接**：{escaped_link}
               '''
               
               api_url = f'https://api.safew.org/bot{safew_bot_token}/sendMessage'
@@ -122,6 +136,7 @@ jobs:
                   print(f'❌ 推送失败：{entry["title"]}，响应：{response.text}')
                   return False
 
+          # 更新已推送链接记录
           def update_pushed_links(store_issue_id, new_links):
               if not new_links or not store_issue_id:
                   return
@@ -144,6 +159,7 @@ jobs:
               else:
                   print(f'❌ 更新存储失败：{update_resp.text}')
 
+          # 主流程执行
           def main():
               rss_entries = parse_rss()
               if not rss_entries:
@@ -161,7 +177,7 @@ jobs:
               print(f'✅ 筛选出未推送条目：{len(new_entries)}条')
               
               success_links = []
-              for entry in new_entries[:5]:
+              for entry in new_entries[:5]:  # 单次最多推送5条
                   if push_to_safew(entry):
                       success_links.append(entry['link'])
               
