@@ -20,13 +20,14 @@ jobs:
           STORE_ISSUE_TITLE: "已推送RSS链接记录"
           RSS_FEED_URL: ${{ secrets.RSS_FEED_URL }}
         run: |
-          python -c "
+          # 使用heredoc语法传递Python代码，避免引号冲突
+          python - <<END
           import os
           import requests
           import feedparser
           from datetime import datetime
 
-          # 配置参数
+          # 读取环境变量
           safew_bot_token = os.getenv('SAFEW_BOT_TOKEN')
           safew_chat_id = os.getenv('SAFEW_CHAT_ID')
           github_pat = os.getenv('RSS_GITHUB_PAT')
@@ -34,12 +35,13 @@ jobs:
           store_issue_title = os.getenv('STORE_ISSUE_TITLE')
           rss_feed_url = os.getenv('RSS_FEED_URL')
 
+          # GitHub API请求头
           github_headers = {
               'Authorization': 'token ' + github_pat,
               'Accept': 'application/vnd.github.v3+json'
           }
 
-          # 解析RSS
+          # 解析RSS源
           def parse_rss():
               try:
                   feed = feedparser.parse(rss_feed_url)
@@ -60,7 +62,7 @@ jobs:
                   print('❌ RSS解析异常：' + str(e))
                   return []
 
-          # 读取已推送链接
+          # 读取已推送链接（GitHub Issues）
           def get_pushed_links():
               search_url = 'https://api.github.com/search/issues?q=repo:' + github_repo + '+title:"' + store_issue_title + '"+state:open'
               response = requests.get(search_url, headers=github_headers)
@@ -96,7 +98,7 @@ jobs:
               print('✅ 读取到' + str(len(pushed_links)) + '条已推送链接')
               return pushed_links, store_issue_id
 
-          # 推送消息（纯字符串拼接，无f-string避免引号冲突）
+          # 推送消息到SafeW
           def push_to_safew(entry):
               def escape(s):
                   for c in '_*~`>#+-.!()':
@@ -125,7 +127,7 @@ jobs:
                   print('❌ 推送失败：' + response.text)
                   return False
 
-          # 更新已推送链接
+          # 更新已推送链接记录
           def update_pushed_links(issue_id, new_links):
               if not new_links or not issue_id:
                   return
@@ -166,4 +168,4 @@ jobs:
 
           if __name__ == '__main__':
               main()
-          "
+          END
