@@ -3,23 +3,23 @@ import logging
 import asyncio
 import json
 import os
-import aiohttp  # 替换telegram库，用于SafeW API请求
+import aiohttp
 
-# 从环境变量读取SafeW配置（替换原Telegram配置）
-SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
-SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
-RSS_URL = os.getenv("RSS_URL")
+# 从环境变量读取配置（完全沿用你的Secret名称）
+SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")  # 已有Secret
+SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")        # 已有Secret
+RSS_URL = os.getenv("RSS_FEED_URL")               # 改用你的RSS_FEED_URL
 
-# 存储已发送ID的仓库文件（与原方案一致）
+# 存储已发送ID的仓库文件（不变）
 POSTS_FILE = "sent_posts.json"
 
-# 配置日志（保持原格式）
+# 日志配置（不变）
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# 读取已发送的post_id（逻辑完全复用）
+# 读取已发送ID（不变）
 def load_sent_posts():
     try:
         if os.path.exists(POSTS_FILE):
@@ -32,7 +32,7 @@ def load_sent_posts():
         logging.error(f"读取已发送ID失败：{str(e)}")
         return []
 
-# 保存已发送的post_id（逻辑完全复用）
+# 保存已发送ID（不变）
 def save_sent_posts(post_ids):
     try:
         with open(POSTS_FILE, "w", encoding="utf-8") as f:
@@ -41,10 +41,10 @@ def save_sent_posts(post_ids):
     except Exception as e:
         logging.error(f"保存已发送ID失败：{str(e)}")
 
-# 获取RSS更新（逻辑完全复用）
+# 获取RSS更新（URL变量改为RSS_FEED_URL对应的RSS_URL）
 def fetch_updates():
     try:
-        logging.info(f"获取RSS源：{RSS_URL}")
+        logging.info(f"获取RSS源：{RSS_URL}")  # 对应RSS_FEED_URL
         feed = feedparser.parse(RSS_URL)
         if feed.bozo:
             logging.error(f"RSS解析错误：{feed.bozo_exception}")
@@ -55,38 +55,34 @@ def fetch_updates():
         logging.error(f"获取RSS失败：{str(e)}")
         return None
 
-# 转义Markdown特殊字符（适配SafeW格式）
+# 转义Markdown特殊字符（不变）
 def escape_markdown(text):
     special_chars = r"_*~`>#+-.!()"
     for char in special_chars:
         text = text.replace(char, f"\{char}")
     return text
 
-# 发送单条消息到SafeW（替换原Telegram发送逻辑）
+# 发送消息到SafeW（Secret名称不变）
 async def send_message(session, title, link, delay=3):
     try:
-        # 发送前等待（避免频率限制，与原方案一致）
         await asyncio.sleep(delay)
         escaped_title = escape_markdown(title)
         escaped_link = escape_markdown(link)
-        # 适配SafeW的消息格式（简化为清晰结构）
         message = f"🔔 RSS新内容提醒\n`{escaped_title}`\n{escaped_link}"
         logging.info(f"发送消息：{message[:100]}")
         
-        # SafeW Bot API请求（替换Telegram API）
+        # 沿用你的SAFEW_BOT_TOKEN和SAFEW_CHAT_ID
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendMessage"
         params = {
             "chat_id": SAFEW_CHAT_ID,
             "text": message,
-            "parse_mode": "Markdown",  # SafeW通常支持基础Markdown
+            "parse_mode": "Markdown",
             "disable_web_page_preview": True
         }
         
-        # 异步发送请求（替代telegram库的Bot实例）
         async with session.get(api_url, params=params) as response:
             response_text = await response.text()
             logging.info(f"SafeW响应：{response_text[:200]}")
-            
             if response.status == 200:
                 logging.info("消息发送成功")
                 return True
@@ -97,7 +93,7 @@ async def send_message(session, title, link, delay=3):
         logging.error(f"发送过程异常：{str(e)}")
         return False
 
-# 检查更新并推送所有新帖子（仅修改发送逻辑调用）
+# 检查更新并推送（逻辑不变）
 async def check_for_updates(sent_post_ids):
     updates = fetch_updates()
     if not updates:
@@ -106,7 +102,6 @@ async def check_for_updates(sent_post_ids):
     new_posts = []
     for entry in updates.entries:
         try:
-            # 提取帖子ID（完全复用原适配逻辑，确保兼容性）
             guid_parts = entry.guid.split("-")
             if len(guid_parts) < 2:
                 logging.warning(f"无效GUID格式：{entry.guid}，跳过")
@@ -123,25 +118,21 @@ async def check_for_updates(sent_post_ids):
             continue
 
     if new_posts:
-        # 保持原排序逻辑（从旧到新推送）
         new_posts.sort(key=lambda x: int(x[0]))
         logging.info(f"发现{len(new_posts)}条新帖子，准备依次推送（间隔3秒）")
         
-        # 用aiohttp ClientSession替代Telegram Bot实例
         async with aiohttp.ClientSession() as session:
             for i, (post_id, title, link) in enumerate(new_posts):
                 delay = 3 if i > 0 else 0
-                # 调用SafeW发送函数
                 success = await send_message(session, title, link, delay)
                 if success:
                     sent_post_ids.append(post_id)
 
-        # 保存更新（完全复用原逻辑）
         save_sent_posts(sent_post_ids)
     else:
         logging.info("无新帖子需要推送")
 
-# 主函数（仅修改发送逻辑调用）
+# 主函数（不变）
 async def main():
     logging.info("===== SafeW RSS推送脚本开始运行 =====")
     sent_post_ids = load_sent_posts()
