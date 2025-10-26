@@ -79,9 +79,7 @@ def fetch_updates():
 
 # ====================== 网页图片提取（适配新域名tyw29.cc）======================
 async def get_images_from_webpage(session, webpage_url):
-    """从帖子页面提取图片（修复相对路径+支持懒加载）"""
     try:
-        # 强化请求头（模拟浏览器，解决反爬）
         headers = {
             "User-Agent": USER_AGENT,
             "Referer": webpage_url,
@@ -89,48 +87,41 @@ async def get_images_from_webpage(session, webpage_url):
             "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
         }
         
-        # 请求网页HTML
         async with session.get(webpage_url, headers=headers, timeout=20) as resp:
             if resp.status != 200:
-                logging.warning(f"帖子页面请求失败（状态码：{resp.status}）：{webpage_url}")
+                logging.warning(f"帖子请求失败（{resp.status}）：{webpage_url}")
                 return []
             html = await resp.text()
         
-        # 解析HTML，定位目标div（匹配日志中的class="message break-all" isfirst="1"）
         soup = BeautifulSoup(html, "html.parser")
         target_divs = soup.find_all("div", class_="message break-all", isfirst="1")
         logging.info(f"找到目标div数量：{len(target_divs)}")
         if not target_divs:
             return []
         
-        # 提取图片（处理相对路径和懒加载）
         images = []
-        base_domain = "/".join(webpage_url.split("/")[:3])  # 动态获取域名（如https://tyw29.cc）
+        base_domain = "/".join(webpage_url.split("/")[:3])
         for div in target_divs:
             img_tags = div.find_all("img")
             logging.info(f"目标div中找到{len(img_tags)}个img标签")
             
             for img in img_tags:
-                # 优先取data-src（懒加载图片），再取src
                 img_url = img.get("data-src", "").strip() or img.get("src", "").strip()
-                # 过滤无效链接（空值、base64、js链接）
                 if not img_url or img_url.startswith(("data:image/", "javascript:")):
                     continue
                 
-                # 处理相对路径（两种情况：带/和不带/）
                 if img_url.startswith("/"):
-                    img_url = f"{base_domain}{img_url}"  # 如/upload/xxx → https://tyw29.cc/upload/xxx
+                    img_url = f"{base_domain}{img_url}"
                 elif not img_url.startswith(("http://", "https://")):
-                    img_url = f"{base_domain}/{img_url}"  # 如upload/xxx → https://tyw29.cc/upload/xxx
+                    img_url = f"{base_domain}/{img_url}"
                 
-                # 验证有效HTTP链接并去重
                 if img_url.startswith(("http://", "https://")) and img_url not in images:
                     images.append(img_url)
                     logging.info(f"✅ 提取到图片：{img_url[:60]}...")
         
         if images:
             logging.info(f"从{webpage_url}成功提取{len(images)}张图片")
-            return images[:1]  # 仅取第一张图片
+            return images[:1]  # 仅取第一张
         else:
             logging.warning(f"找到img标签但未提取到有效图片：{webpage_url}")
             return []
