@@ -26,7 +26,7 @@ jobs:
           import feedparser
           from datetime import datetime
 
-          # 配置参数读取
+          # 配置参数
           safew_bot_token = os.getenv('SAFEW_BOT_TOKEN')
           safew_chat_id = os.getenv('SAFEW_CHAT_ID')
           github_pat = os.getenv('RSS_GITHUB_PAT')
@@ -35,16 +35,16 @@ jobs:
           rss_feed_url = os.getenv('RSS_FEED_URL')
 
           github_headers = {
-              'Authorization': f'token {github_pat}',
+              'Authorization': 'token ' + github_pat,
               'Accept': 'application/vnd.github.v3+json'
           }
 
-          # 解析RSS源
+          # 解析RSS
           def parse_rss():
               try:
                   feed = feedparser.parse(rss_feed_url)
                   if feed.bozo != 0:
-                      print(f'❌ RSS解析失败：{feed.bozo_exception}')
+                      print('❌ RSS解析失败：' + str(feed.bozo_exception))
                       return []
                   entries = []
                   for entry in feed.entries:
@@ -54,65 +54,63 @@ jobs:
                           'summary': entry.get('summary', '无摘要')[:150] + '...' if len(entry.get('summary', '')) > 150 else entry.get('summary', '无摘要'),
                           'published': entry.get('published', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                       })
-                  print(f'✅ 解析到{len(entries)}条RSS条目')
+                  print('✅ 解析到' + str(len(entries)) + '条RSS条目')
                   return entries
               except Exception as e:
-                  print(f'❌ RSS解析异常：{str(e)}')
+                  print('❌ RSS解析异常：' + str(e))
                   return []
 
           # 读取已推送链接
           def get_pushed_links():
-              search_url = f'https://api.github.com/search/issues?q=repo:{github_repo}+title:"{store_issue_title}"+state:open'
+              search_url = 'https://api.github.com/search/issues?q=repo:' + github_repo + '+title:"' + store_issue_title + '"+state:open'
               response = requests.get(search_url, headers=github_headers)
               if response.status_code != 200:
-                  print(f'❌ 搜索存储Issue失败：{response.text}')
+                  print('❌ 搜索存储Issue失败：' + response.text)
                   return set(), None
               
               search_result = response.json()
               if search_result['total_count'] == 0:
-                  create_url = f'https://api.github.com/repos/{github_repo}/issues'
+                  create_url = 'https://api.github.com/repos/' + github_repo + '/issues'
                   create_resp = requests.post(create_url, headers=github_headers, json={
                       'title': store_issue_title,
                       'body': '# 已推送RSS链接记录\n\n以下为已推送的链接，每行一个：\n',
                       'labels': ['rss-store']
                   })
                   if create_resp.status_code == 201:
-                      print(f'✅ 创建存储Issue成功')
+                      print('✅ 创建存储Issue成功')
                       return set(), create_resp.json()['number']
                   else:
-                      print(f'❌ 创建存储Issue失败：{create_resp.text}')
+                      print('❌ 创建存储Issue失败：' + create_resp.text)
                       return set(), None
               
               store_issue_id = search_result['items'][0]['number']
-              issue_resp = requests.get(f'https://api.github.com/repos/{github_repo}/issues/{store_issue_id}', headers=github_headers)
+              issue_resp = requests.get('https://api.github.com/repos/' + github_repo + '/issues/' + str(store_issue_id), headers=github_headers)
               if issue_resp.status_code != 200:
-                  print(f'❌ 获取存储Issue失败：{issue_resp.text}')
+                  print('❌ 获取存储Issue失败：' + issue_resp.text)
                   return set(), None
               
               pushed_links = set()
               for line in issue_resp.json()['body'].split('\n'):
                   if line.strip().startswith('http'):
                       pushed_links.add(line.strip())
-              print(f'✅ 读取到{len(pushed_links)}条已推送链接')
+              print('✅ 读取到' + str(len(pushed_links)) + '条已推送链接')
               return pushed_links, store_issue_id
 
-          # 推送消息（单行字符串拼接，避免格式问题）
+          # 推送消息（纯字符串拼接，无f-string避免引号冲突）
           def push_to_safew(entry):
-              # 转义Markdown特殊字符
               def escape(s):
-                  for c in r'_*~`>#+-.!()':
-                      s = s.replace(c, f'\{c}')
+                  for c in '_*~`>#+-.!()':
+                      s = s.replace(c, '\\' + c)
                   return s
               
-              # 用单行拼接构建消息，避免多行引号
               msg = '🔔 RSS新内容提醒\n'
               msg += '----------------\n'
-              msg += f'**标题**：{escape(entry["title"])}\n'
-              msg += f'**发布时间**：{entry["published"]}\n'
-              msg += f'**摘要**：{escape(entry["summary"])}\n'
-              msg += f'**链接**：{escape(entry["link"])}'
+              msg += '**标题**：' + escape(entry['title']) + '\n'
+              msg += '**发布时间**：' + entry['published'] + '\n'
+              msg += '**摘要**：' + escape(entry['summary']) + '\n'
+              msg += '**链接**：' + escape(entry['link'])
               
-              api_url = f'https://api.safew.org/bot{safew_bot_token}/sendMessage'
+              api_url = 'https://api.safew.org/bot' + safew_bot_token + '/sendMessage'
               response = requests.post(api_url, params={
                   'chat_id': safew_chat_id,
                   'text': msg,
@@ -121,10 +119,10 @@ jobs:
               })
               
               if response.status_code == 200:
-                  print(f'✅ 推送成功：{entry["title"]}')
+                  print('✅ 推送成功：' + entry['title'])
                   return True
               else:
-                  print(f'❌ 推送失败：{response.text}')
+                  print('❌ 推送失败：' + response.text)
                   return False
 
           # 更新已推送链接
@@ -132,16 +130,16 @@ jobs:
               if not new_links or not issue_id:
                   return
               
-              issue_resp = requests.get(f'https://api.github.com/repos/{github_repo}/issues/{issue_id}', headers=github_headers)
+              issue_resp = requests.get('https://api.github.com/repos/' + github_repo + '/issues/' + str(issue_id), headers=github_headers)
               if issue_resp.status_code != 200:
-                  print(f'❌ 无法更新存储：{issue_resp.text}')
+                  print('❌ 无法更新存储：' + issue_resp.text)
                   return
               
               updated_body = issue_resp.json()['body'] + '\n' + '\n'.join(new_links)
-              requests.patch(f'https://api.github.com/repos/{github_repo}/issues/{issue_id}', headers=github_headers, json={
+              requests.patch('https://api.github.com/repos/' + github_repo + '/issues/' + str(issue_id), headers=github_headers, json={
                   'body': updated_body
               })
-              print(f'✅ 更新存储成功，新增{len(new_links)}条链接')
+              print('✅ 更新存储成功，新增' + str(len(new_links)) + '条链接')
 
           # 主函数
           def main():
