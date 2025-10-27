@@ -7,7 +7,7 @@ import aiohttp
 import uuid
 from bs4 import BeautifulSoup
 
-# ====================== 环境配置 =======================
+# ====================== 环境配置（不变）======================
 SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
 SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
 RSS_FEED_URL = os.getenv("RSS_FEED_URL")
@@ -16,13 +16,13 @@ MAX_PUSH_PER_RUN = 5
 FIXED_PROJECT_URL = "https://tyw29.cc/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# ====================== 日志配置 =======================
+# ====================== 日志配置（不变）======================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ====================== 去重记录管理 =======================
+# ====================== 去重记录管理（不变）======================
 def load_sent_posts():
     try:
         if os.path.exists(POSTS_FILE):
@@ -48,7 +48,7 @@ def save_sent_posts(post_links):
     except Exception as e:
         logging.error(f"❌ 保存去重记录失败：{str(e)}")
 
-# ====================== RSS获取与去重 =======================
+# ====================== RSS获取与去重（不变）======================
 def fetch_updates():
     try:
         logging.info(f"正在获取RSS源：{RSS_FEED_URL}")
@@ -71,7 +71,7 @@ def fetch_updates():
         logging.error(f"❌ 获取RSS源异常：{str(e)}")
         return None
 
-# ====================== 网页图片提取 =======================
+# ====================== 网页图片提取（不变）======================
 async def get_images_from_webpage(session, webpage_url):
     try:
         headers = {
@@ -121,17 +121,21 @@ async def get_images_from_webpage(session, webpage_url):
         logging.error(f"❌ 提取图片异常：{str(e)}")
         return []
 
-# ====================== Markdown转义 =======================
+# ====================== Markdown特殊字符转义（核心修复：移除.和-的转义）======================
 def escape_markdown(text):
-    special_chars = r"_*~`>#+-.!()"
+    """
+    仅转义影响Markdown格式的字符，不转义URL中的.和-
+    需转义字符：_ * ~ ` > # + ! ( ) （避免文本被解析为Markdown格式）
+    不转义字符：. - （URL合法字符，转义后破坏链接）
+    """
+    special_chars = r"_*~`>#+!()"  # 移除了原有的.和-
     for char in special_chars:
         if char in text:
             text = text.replace(char, f"\{char}")
     return text
 
-# ====================== 图片+文字合并发送（核心修改）=======================
+# ====================== 图片+文字合并发送（不变）=======================
 async def send_photo_with_caption(session, image_url, caption, delay=5):
-    """发送带文字说明的图片（合并为一条消息）"""
     try:
         await asyncio.sleep(delay)
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendPhoto"
@@ -174,28 +178,26 @@ async def send_photo_with_caption(session, image_url, caption, delay=5):
             logging.error(f"❌ 生成boundary失败：{str(e)}")
             return False
 
-        # 3. 构造请求体（含caption字段，核心修改）
+        # 3. 构造请求体（含caption字段）
         try:
             chat_id_str = str(SAFEW_CHAT_ID)
             filename = image_url.split("/")[-1].split("?")[0].replace('"', '').replace("'", "").replace(" ", "_")
             logging.info(f"文件名：{filename}")
 
-            # 新增：添加caption字段（文字说明）
+            # 构造文本字段（chat_id + caption）
             text_parts = [
-                # chat_id字段
                 f"--{boundary}\r\n"
                 f'Content-Disposition: form-data; name="chat_id"\r\n'
                 f"\r\n"
                 f"{chat_id_str}\r\n",
-                # caption字段（文字内容，合并的关键）
                 f"--{boundary}\r\n"
                 f'Content-Disposition: form-data; name="caption"\r\n'
                 f"\r\n"
-                f"{caption}\r\n"  # 这里填入文字内容
+                f"{caption}\r\n"
             ]
             text_part = "".join(text_parts).encode("utf-8")
 
-            # 图片文件字段
+            # 构造图片字段
             file_part_header = (
                 f"--{boundary}\r\n"
                 f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'
@@ -241,7 +243,7 @@ async def send_photo_with_caption(session, image_url, caption, delay=5):
         logging.error(f"❌ 图片+文字发送总异常：{str(e)}")
         return False
 
-# ====================== 纯文本发送（无图时用）=======================
+# ====================== 纯文本发送（不变）=======================
 async def send_text(session, caption, delay=5):
     try:
         await asyncio.sleep(delay)
@@ -266,7 +268,7 @@ async def send_text(session, caption, delay=5):
         logging.error(f"❌ 纯文本发送异常：{str(e)}")
         return False
 
-# ====================== 核心推送逻辑（合并消息修改）======================
+# ====================== 核心推送逻辑（不变）======================
 async def check_for_updates():
     sent_links = load_sent_posts()
     rss_entries = fetch_updates()
@@ -293,10 +295,10 @@ async def check_for_updates():
     async with aiohttp.ClientSession() as session:
         success_links = []
         for i, entry in enumerate(push_entries):
-            # 构造文字内容（作为图片的caption）
+            # 构造文字内容（仅转义格式字符，URL正常显示）
             title = escape_markdown(entry["title"])
             author = escape_markdown(entry["author"])
-            link = escape_markdown(entry["link"])
+            link = entry["link"]  # URL无需转义，直接使用原链接
             caption = (
                 f"{title}\n"
                 f"由 @{author} 发起的话题讨论\n"
@@ -309,10 +311,10 @@ async def check_for_updates():
             send_success = False
 
             if images:
-                # 有图：调用合并发送函数（图片+文字一条消息）
+                # 有图：合并发送（图片+文字）
                 send_success = await send_photo_with_caption(session, images[0], caption, delay)
             else:
-                # 无图：仍用纯文本发送
+                # 无图：纯文本发送
                 send_success = await send_text(session, caption, delay)
 
             if send_success:
@@ -324,7 +326,7 @@ async def check_for_updates():
     else:
         logging.info("无成功推送的内容，不更新去重记录")
 
-# ====================== 主函数 =======================
+# ====================== 主函数（不变）======================
 async def main():
     logging.info("===== SafeW RSS推送脚本启动 =====")
     
