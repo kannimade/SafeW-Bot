@@ -1,8 +1,8 @@
 name: RSS to SafeW
 on:
   schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch:
+    - cron: "*/7 * * * *"  # 每7分钟触发一次
+  workflow_dispatch:  # 保留手动触发功能
 
 jobs:
   run:
@@ -14,17 +14,17 @@ jobs:
           token: ${{ secrets.RSS_GITHUB_PAT }}
           fetch-depth: 0
 
-      - name: 设置Python（解决缓存报错）
+      - name: 设置Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-          cache: pip  # 现在能找到requirements.txt，缓存正常
-          cache-dependency-path: requirements.txt  # 明确指定依赖文件路径
+          cache: pip  
+          cache-dependency-path: requirements.txt  
 
-      - name: 安装依赖（通过requirements.txt）
+      - name: 安装依赖
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt  # 从依赖清单安装，版本统一
+          pip install -r requirements.txt  
 
       - name: 运行脚本
         env:
@@ -33,9 +33,11 @@ jobs:
           RSS_FEED_URL: ${{ secrets.RSS_FEED_URL }}
         run: python rss_safew.py
 
-      - name: 提交去重记录
+      - name: 提交推送与待审核记录
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "更新推送记录"
-          file_pattern: "sent_posts.json"
+          commit_message: "更新推送和待审核记录"
+          file_pattern: "sent_posts.json pending_tids.json"
           branch: main
+          commit_user_name: "GitHub Actions"
+          commit_user_email: "actions@github.com"
