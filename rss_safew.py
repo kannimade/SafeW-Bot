@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
 SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
 RSS_FEED_URL = os.getenv("RSS_FEED_URL")
-PUSHED_TIDS_FILE = "pushed_tids.json"  # 存储所有已推送TID的列表
+PUSHED_TIDS_FILE = "sent_posts.json"  # 存储所有已推送TID的列表
 MAX_PUSH_PER_RUN = 5
 FIXED_PROJECT_URL = "https://tyw29.cc/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -38,58 +38,53 @@ def extract_tid_from_url(url):
         return None
 
 # ====================== 2. 已推送TID的存储/读取（核心修改）======================
-def load_pushed_tids():
-    """读取所有已推送的TID列表（无记录则返回空列表）"""
+def load_sent_tids():
+    """读取所有已推送的TID列表（存储在sent_posts.json）"""
     try:
-        if not os.path.exists(PUSHED_TIDS_FILE):
-            logging.info(f"{PUSHED_TIDS_FILE}不存在，初始化空列表")
-            with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+        if not os.path.exists(SENT_POSTS_FILE):
+            logging.info(f"{SENT_POSTS_FILE}不存在，初始化空列表")
+            with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
                 json.dump([], f)
             return []
         
-        with open(PUSHED_TIDS_FILE, "r", encoding="utf-8") as f:
+        with open(SENT_POSTS_FILE, "r", encoding="utf-8") as f:
             content = f.read().strip()
             if not content:
                 return []
             tids = json.loads(content)
-            # 验证列表元素是否为整数
             if not isinstance(tids, list) or not all(isinstance(t, int) for t in tids):
-                logging.error(f"{PUSHED_TIDS_FILE}格式错误（非整数列表），重置为空列表")
-                with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+                logging.error(f"{SENT_POSTS_FILE}格式错误，重置为空列表")
+                with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
                     json.dump([], f)
                 return []
-            logging.info(f"读取到已推送TID列表（共{len(tids)}条）：{tids[:5]}...")  # 只显示前5条避免过长
+            logging.info(f"读取到已推送TID列表（共{len(tids)}条）：{tids[:5]}...")
             return tids
     except json.JSONDecodeError:
-        logging.error(f"{PUSHED_TIDS_FILE}解析失败，重置为空列表")
-        with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+        logging.error(f"{SENT_POSTS_FILE}解析失败，重置为空列表")
+        with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
             json.dump([], f)
         return []
     except Exception as e:
         logging.error(f"读取已推送TID失败：{str(e)}，返回空列表")
         return []
 
-def save_pushed_tids(new_tids, existing_tids):
-    """将新推送的TID添加到已有列表（去重后保存）"""
+def save_sent_tids(new_tids, existing_tids):
+    """将新推送的TID添加到sent_posts.json（去重后保存）"""
     try:
-        # 合并列表并去重（保持整数类型）
-        all_tids = list(set(existing_tids + new_tids))
-        # 排序（方便查看，不影响功能）
-        all_tids_sorted = sorted(all_tids)
-        # 保存
-        with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+        all_tids = list(set(existing_tids + new_tids))  # 去重
+        all_tids_sorted = sorted(all_tids)  # 排序
+        with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
             json.dump(all_tids_sorted, f, ensure_ascii=False, indent=2)
-        logging.info(f"已更新推送记录：新增{len(new_tids)}条，总记录{len(all_tids_sorted)}条")
+        logging.info(f"已更新{SENT_POSTS_FILE}：新增{len(new_tids)}条，总记录{len(all_tids_sorted)}条")
     except Exception as e:
-        logging.error(f"保存推送记录失败：{str(e)}")
+        logging.error(f"保存{SENT_POSTS_FILE}失败：{str(e)}")
 
-# ====================== 3. RSS获取与筛选（基于TID列表筛选）======================
+# ====================== 3. RSS获取与筛选（基于sent_posts.json筛选）======================
 def fetch_updates():
-    """获取RSS并筛选出不在已推送列表中的新帖"""
+    """获取RSS并筛选出不在sent_posts.json中的新帖"""
     try:
-        # 读取已推送TID列表
-        pushed_tids = load_pushed_tids()
-        logging.info(f"开始筛选新帖（排除已推送的{len(pushed_tids)}个TID）")
+        sent_tids = load_sent_tids()
+        logging.info(f"开始筛选新帖（排除已推送的{len(sent_tids)}个TID）")
         
         feed = feedparser.parse(RSS_FEED_URL)
         if feed.bozo:
@@ -104,22 +99,22 @@ def fetch_updates():
             
             tid = extract_tid_from_url(link)
             if not tid:
-                continue  # 跳过无法提取TID的条目
+                continue
             
-            # 筛选：TID不在已推送列表中
-            if tid not in pushed_tids:
+            if tid not in sent_tids:
                 entry["tid"] = tid
                 valid_entries.append(entry)
-                logging.debug(f"新增待推送：TID={tid}（不在已推送列表）")
+                logging.debug(f"新增待推送：TID={tid}")
+                logging.debug(f"新增待推送：TID={tid}")
             else:
-                logging.debug(f"跳过已推送：TID={tid}（已在列表中）")
+                logging.debug(f"跳过已推送：TID={tid}")
         
         logging.info(f"筛选完成：共{len(valid_entries)}条新帖待推送")
         return valid_entries
     except Exception as e:
         logging.error(f"获取RSS异常：{str(e)}")
         return None
-
+        
 # ====================== 4. 图片提取（不变）======================
 async def get_images_from_webpage(session, webpage_url):
     try:
