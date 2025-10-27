@@ -8,11 +8,12 @@ import uuid
 import re
 from bs4 import BeautifulSoup
 
-# ====================== 环境配置 =======================
+# ====================== 环境配置（统一变量名）======================
 SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
 SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
 RSS_FEED_URL = os.getenv("RSS_FEED_URL")
-PUSHED_TIDS_FILE = "sent_posts.json"  # 存储所有已推送TID的列表
+# 统一存储文件变量名（关键修复1）
+SENT_POSTS_FILE = "sent_posts.json"  # 改为SENT_POSTS_FILE，与后续函数一致
 MAX_PUSH_PER_RUN = 5
 FIXED_PROJECT_URL = "https://tyw29.cc/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -37,10 +38,11 @@ def extract_tid_from_url(url):
         logging.error(f"提取TID失败：{str(e)}")
         return None
 
-# ====================== 2. 已推送TID的存储/读取（核心修改）======================
+# ====================== 2. 已推送TID的存储/读取（修复变量名）======================
 def load_sent_tids():
     """读取所有已推送的TID列表（存储在sent_posts.json）"""
     try:
+        # 用已定义的SENT_POSTS_FILE（关键修复1）
         if not os.path.exists(SENT_POSTS_FILE):
             logging.info(f"{SENT_POSTS_FILE}不存在，初始化空列表")
             with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
@@ -73,6 +75,7 @@ def save_sent_tids(new_tids, existing_tids):
     try:
         all_tids = list(set(existing_tids + new_tids))  # 去重
         all_tids_sorted = sorted(all_tids)  # 排序
+        # 用已定义的SENT_POSTS_FILE（关键修复1）
         with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
             json.dump(all_tids_sorted, f, ensure_ascii=False, indent=2)
         logging.info(f"已更新{SENT_POSTS_FILE}：新增{len(new_tids)}条，总记录{len(all_tids_sorted)}条")
@@ -83,7 +86,7 @@ def save_sent_tids(new_tids, existing_tids):
 def fetch_updates():
     """获取RSS并筛选出不在sent_posts.json中的新帖"""
     try:
-        sent_tids = load_sent_tids()
+        sent_tids = load_sent_tids()  # 调用正确的函数名
         logging.info(f"开始筛选新帖（排除已推送的{len(sent_tids)}个TID）")
         
         feed = feedparser.parse(RSS_FEED_URL)
@@ -104,7 +107,6 @@ def fetch_updates():
             if tid not in sent_tids:
                 entry["tid"] = tid
                 valid_entries.append(entry)
-                logging.debug(f"新增待推送：TID={tid}")
                 logging.debug(f"新增待推送：TID={tid}")
             else:
                 logging.debug(f"跳过已推送：TID={tid}")
@@ -240,7 +242,7 @@ async def send_text(session, caption, delay=5):
         logging.error(f"文本发送异常：{str(e)}")
         return False
 
-# ====================== 8. 核心推送逻辑（按TID升序+全量存储）======================
+# ====================== 8. 核心推送逻辑（修复函数名调用）======================
 async def check_for_updates():
     # 获取待推送新帖
     rss_entries = fetch_updates()
@@ -258,8 +260,8 @@ async def check_for_updates():
 
     # 发送并记录成功的TID
     async with aiohttp.ClientSession() as session:
-        # 读取已有推送记录（用于后续合并）
-        existing_tids = load_pushed_tids()
+        # 调用正确的函数名load_sent_tids（关键修复2）
+        existing_tids = load_sent_tids()
         # 记录本次推送成功的TID
         newly_pushed_tids = []
         
@@ -293,9 +295,9 @@ async def check_for_updates():
                 newly_pushed_tids.append(tid)
                 logging.info(f"✅ 已推送TID：{tid}")
 
-    # 保存新推送的TID（合并到已有列表并去重）
+    # 保存新推送的TID（调用正确的函数名save_sent_tids，关键修复2）
     if newly_pushed_tids:
-        save_pushed_tids(newly_pushed_tids, existing_tids)
+        save_sent_tids(newly_pushed_tids, existing_tids)
     else:
         logging.info("无成功推送的TID，不更新记录")
 
