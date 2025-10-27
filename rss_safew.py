@@ -343,7 +343,7 @@ async def send_media_group(session, image_urls, caption, delay=5):
             # 添加图片文件字段
             body_parts.extend([
                 f"--{boundary}",
-                f'Content-Disposition: form-data; name="photo{idx}"; filename="{img['filename']}"',
+                f'Content-Disposition: form-data; name="photo{idx}"; filename="{img["filename"]}"',
                 f"Content-Type: {img['content_type']}",
                 '',
                 img["data"].decode("latin-1")  # 二进制转latin-1兼容编码
