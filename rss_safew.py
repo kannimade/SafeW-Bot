@@ -5,70 +5,104 @@ import json
 import os
 import aiohttp
 import uuid
+import re  # 新增：用于提取TID
 from bs4 import BeautifulSoup
 
-# ====================== 环境配置（不变）======================
+# ====================== 环境配置 =======================
 SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
 SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
 RSS_FEED_URL = os.getenv("RSS_FEED_URL")
-POSTS_FILE = "sent_posts.json"
+# 存储文件改为保存"最大TID"（替代原链接列表）
+MAX_TID_FILE = "max_tid.json"  
 MAX_PUSH_PER_RUN = 5
 FIXED_PROJECT_URL = "https://tyw29.cc/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# ====================== 日志配置（不变）======================
+# ====================== 日志配置 =======================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ====================== 去重记录管理（不变）======================
-def load_sent_posts():
+# ====================== 工具函数：提取TID（核心新增）=======================
+def extract_tid_from_url(url):
+    """从帖子URL中提取TID（如从"thread-16353.htm"提取16353）"""
     try:
-        if os.path.exists(POSTS_FILE):
-            with open(POSTS_FILE, "r", encoding="utf-8") as f:
+        # 正则匹配：匹配"thread-"后、".htm"前的数字
+        match = re.search(r'thread-(\d+)\.htm', url)
+        if match:
+            return int(match.group(1))  # 返回整数TID
+        logging.warning(f"无法提取TID：{url}（URL格式异常）")
+        return None
+    except Exception as e:
+        logging.error(f"提取TID失败（{url}）：{str(e)}")
+        return None
+
+# ====================== 去重逻辑修改：存储/读取最大TID =======================
+def load_max_tid():
+    """读取已推送的最大TID（替代原链接列表）"""
+    try:
+        if os.path.exists(MAX_TID_FILE):
+            with open(MAX_TID_FILE, "r", encoding="utf-8") as f:
                 content = f.read().strip()
-                return json.loads(content) if content else []
-        logging.info("首次运行，初始化空去重记录")
-        return []
-    except json.JSONDecodeError:
-        logging.error("❌ sent_posts.json格式错误，重置为空列表")
-        with open(POSTS_FILE, "w", encoding="utf-8") as f:
-            json.dump([], f)
-        return []
+                if content:
+                    max_tid = int(content)
+                    logging.info(f"读取到已推送最大TID：{max_tid}")
+                    return max_tid
+        # 首次运行/文件为空，默认最大TID为0（推送所有大于0的帖子）
+        logging.info("首次运行/无历史TID记录，默认最大TID为0")
+        return 0
+    except (ValueError, json.JSONDecodeError):
+        logging.error(f"{MAX_TID_FILE}格式错误，重置最大TID为0")
+        with open(MAX_TID_FILE, "w", encoding="utf-8") as f:
+            f.write("0")
+        return 0
     except Exception as e:
-        logging.error(f"❌ 读取去重记录失败：{str(e)}")
-        return []
+        logging.error(f"读取最大TID失败：{str(e)}")
+        return 0
 
-def save_sent_posts(post_links):
+def save_max_tid(new_max_tid):
+    """保存新的最大TID（替代原链接列表保存）"""
     try:
-        with open(POSTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(post_links, f, ensure_ascii=False, indent=2)
-        logging.info(f"✅ 已保存{len(post_links)}条去重记录")
+        with open(MAX_TID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(new_max_tid))  # 直接保存数字字符串，无需JSON
+        logging.info(f"已更新最大TID为：{new_max_tid}（后续仅推送大于该值的帖子）")
     except Exception as e:
-        logging.error(f"❌ 保存去重记录失败：{str(e)}")
+        logging.error(f"保存最大TID失败：{str(e)}")
 
-# ====================== RSS获取与去重（不变）======================
+# ====================== RSS获取与筛选（基于TID过滤）======================
 def fetch_updates():
+    """获取RSS源，过滤出TID大于当前最大TID的新帖子"""
     try:
         logging.info(f"正在获取RSS源：{RSS_FEED_URL}")
         feed = feedparser.parse(RSS_FEED_URL)
+        
         if feed.bozo:
-            logging.error(f"❌ RSS解析失败：{feed.bozo_exception}")
+            logging.error(f"RSS解析失败：{feed.bozo_exception}")
             return None
         
-        unique_entries = []
-        seen_links = set()
+        # 1. 读取当前最大TID
+        current_max_tid = load_max_tid()
+        # 2. 过滤+提取有效帖子（含TID）
+        valid_entries = []
         for entry in feed.entries:
             link = entry.get("link", "").strip()
-            if link and link not in seen_links:
-                seen_links.add(link)
-                unique_entries.append(entry)
+            if not link:
+                continue
+            # 提取TID
+            tid = extract_tid_from_url(link)
+            if not tid:
+                continue
+            # 仅保留TID > 当前最大TID的帖子（避免推送历史数据）
+            if tid > current_max_tid:
+                # 给条目添加tid字段，方便后续排序
+                entry["tid"] = tid
+                valid_entries.append(entry)
         
-        logging.info(f"✅ RSS源去重后剩余{len(unique_entries)}条")
-        return unique_entries
+        logging.info(f"RSS源原始条目{len(feed.entries)}条，过滤后剩余{len(valid_entries)}条新帖子（TID > {current_max_tid}）")
+        return valid_entries
     except Exception as e:
-        logging.error(f"❌ 获取RSS源异常：{str(e)}")
+        logging.error(f"获取RSS源异常：{str(e)}")
         return None
 
 # ====================== 网页图片提取（不变）======================
@@ -121,14 +155,9 @@ async def get_images_from_webpage(session, webpage_url):
         logging.error(f"❌ 提取图片异常：{str(e)}")
         return []
 
-# ====================== Markdown特殊字符转义（核心修复：移除.和-的转义）======================
+# ====================== Markdown特殊字符转义（不变）======================
 def escape_markdown(text):
-    """
-    仅转义影响Markdown格式的字符，不转义URL中的.和-
-    需转义字符：_ * ~ ` > # + ! ( ) （避免文本被解析为Markdown格式）
-    不转义字符：. - （URL合法字符，转义后破坏链接）
-    """
-    special_chars = r"_*~`>#+!()"  # 移除了原有的.和-
+    special_chars = r"_*~`>#+!()"
     for char in special_chars:
         if char in text:
             text = text.replace(char, f"\{char}")
@@ -268,46 +297,46 @@ async def send_text(session, caption, delay=5):
         logging.error(f"❌ 纯文本发送异常：{str(e)}")
         return False
 
-# ====================== 核心推送逻辑（不变）======================
+# ====================== 核心推送逻辑（新增排序+TID更新）======================
 async def check_for_updates():
-    sent_links = load_sent_posts()
+    # 1. 获取过滤后的新帖子（TID > 当前最大TID）
     rss_entries = fetch_updates()
     if not rss_entries:
-        logging.info("无有效RSS内容，结束推送")
+        logging.info("无有效新帖子，结束推送")
         return
 
-    new_entries = []
-    for entry in rss_entries:
-        link = entry.get("link", "").strip()
-        title = entry.get("title", "无标题").strip()
-        author = entry.get("author", entry.get("dc_author", "未知用户")).strip()
-        
-        if link and link not in sent_links:
-            new_entries.append({"title": title, "author": author, "link": link})
+    # 2. 按TID升序排序（从小到大发送，实现顺序浏览）
+    # 排序依据：每个entry的"tid"字段（fetch_updates中已添加）
+    rss_entries_sorted = sorted(rss_entries, key=lambda x: x["tid"])
+    logging.info(f"新帖子按TID升序排序：{[entry['tid'] for entry in rss_entries_sorted]}")
 
-    if not new_entries:
-        logging.info("无新内容需要推送")
-        return
+    # 3. 限制单次推送数量（避免刷屏）
+    push_entries = rss_entries_sorted[:MAX_PUSH_PER_RUN]
+    logging.info(f"本次推送前{len(push_entries)}条帖子（TID顺序：{[entry['tid'] for entry in push_entries]}）")
 
-    push_entries = new_entries[:MAX_PUSH_PER_RUN]
-    logging.info(f"发现{len(new_entries)}条新内容，推送前{len(push_entries)}条")
-
+    # 4. 异步发送内容
     async with aiohttp.ClientSession() as session:
-        success_links = []
+        # 记录本次推送的最大TID（用于后续更新）
+        pushed_tids = []
         for i, entry in enumerate(push_entries):
-            # 构造文字内容（仅转义格式字符，URL正常显示）
-            title = escape_markdown(entry["title"])
-            author = escape_markdown(entry["author"])
-            link = entry["link"]  # URL无需转义，直接使用原链接
+            link = entry.get("link", "").strip()
+            title = entry.get("title", "无标题").strip()
+            author = entry.get("author", entry.get("dc_author", "未知用户")).strip()
+            tid = entry["tid"]  # fetch_updates中已提取的TID
+
+            # 构造文字内容
+            title_escaped = escape_markdown(title)
+            author_escaped = escape_markdown(author)
             caption = (
-                f"{title}\n"
-                f"由 @{author} 发起的话题讨论\n"
+                f"{title_escaped}\n"
+                f"由 @{author_escaped} 发起的话题讨论\n"
                 f"链接：{link}\n\n"
                 f"项目地址：{FIXED_PROJECT_URL}"
             )
             
-            images = await get_images_from_webpage(session, entry["link"])
-            delay = 5 if i > 0 else 0
+            # 提取图片
+            images = await get_images_from_webpage(session, link)
+            delay = 5 if i > 0 else 0  # 第一条立即发，后续间隔5秒
             send_success = False
 
             if images:
@@ -317,14 +346,18 @@ async def check_for_updates():
                 # 无图：纯文本发送
                 send_success = await send_text(session, caption, delay)
 
+            # 发送成功则记录TID
             if send_success:
-                success_links.append(entry["link"])
+                pushed_tids.append(tid)
+                logging.info(f"✅ 已推送TID：{tid}（{link}）")
 
-    if success_links:
-        sent_links.extend(success_links)
-        save_sent_posts(sent_links)
+    # 5. 更新最大TID（仅当有成功推送的帖子时）
+    if pushed_tids:
+        # 取本次推送的最大TID作为新的全局最大TID
+        new_max_tid = max(pushed_tids)
+        save_max_tid(new_max_tid)
     else:
-        logging.info("无成功推送的内容，不更新去重记录")
+        logging.info("无成功推送的帖子，不更新最大TID")
 
 # ====================== 主函数（不变）======================
 async def main():
