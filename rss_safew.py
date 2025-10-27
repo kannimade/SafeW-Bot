@@ -8,524 +8,532 @@ import uuid
 import re
 from bs4 import BeautifulSoup
 
-# ====================== 环境配置 ======================
-SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")       # 机器人令牌（格式：数字:字符）
-SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")           # 目标群组ID（整数/字符串）
-RSS_FEED_URL = os.getenv("RSS_FEED_URL")             # RSS源地址
-SENT_POSTS_FILE = "sent_posts.json"                  # 已推送TID存储文件
-MAX_PUSH_PER_RUN = 5                                 # 单次最多推送帖子数
-FIXED_PROJECT_URL = "https://tyw29.cc/"              # 项目固定域名
+# ====================== 环境配置 =======================
+SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
+SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
+RSS_FEED_URL = os.getenv("RSS_FEED_URL")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SENT_POSTS_FILE = os.path.join(SCRIPT_DIR, "sent_posts.json")
+PENDING_POSTS_FILE = os.path.join(SCRIPT_DIR, "pending_tids.json")
+MAX_PUSH_PER_RUN = 5
+FIXED_PROJECT_URL = "https://tyw29.cc/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-MAX_IMAGES_PER_MSG = 10                              # 单条消息最多图片数（API限制2-10）
-IMAGE_DOWNLOAD_TIMEOUT = 15                          # 图片下载超时（秒）
-MSG_SEND_TIMEOUT = 30                                # 消息发送超时（秒）
+MAX_IMAGES_PER_MSG = 10
+MAX_DESCRIPTION_LENGTH = 300  
 
 # ====================== 日志配置 =======================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+logging.info(f"脚本目录：{SCRIPT_DIR}")
+logging.info(f"已推送文件路径：{SENT_POSTS_FILE}")
+logging.info(f"待审核文件路径：{PENDING_POSTS_FILE}")
 
-# ====================== 1. TID提取 =======================
-def extract_tid_from_url(url):
-    """从帖子URL提取TID（thread-xxx.htm格式）"""
-    try:
-        match = re.search(r'thread-(\d+)\.htm', url)
-        if match:
-            tid = int(match.group(1))
-            logging.debug(f"提取TID：{url[:50]}... → {tid}")
-            return tid
-        logging.warning(f"无法提取TID（URL格式异常）：{url[:50]}...")
-        return None
-    except Exception as e:
-        logging.error(f"提取TID失败：{str(e)}，URL：{url[:50]}...")
-        return None
+# ====================== 工具函数 =======================
+def get_image_content_type(filename):
+    ext = filename.lower().split(".")[-1]
+    mime_map = {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "png": "image/png", "gif": "image/gif", "webp": "image/webp"
+    }
+    return mime_map.get(ext, "image/jpeg")
 
-# ====================== 2. 已推送TID存储/读取 ======================
+def is_valid_image(data):
+    if not data:
+        return False
+    signatures = {b"\xff\xd8\xff": "jpeg", b"\x89\x50\x4e\x47": "png", b"\x47\x49\x46\x38": "gif", b"\x52\x49\x46\x46": "webp"}
+    for sig, _ in signatures.items():
+        if data.startswith(sig):
+            return True
+    logging.warning(f"无效图片文件头：{data[:8].hex()}")
+    return False
+
+# ====================== TID管理 =======================
 def load_sent_tids():
-    """读取已推送的TID列表（sent_posts.json）"""
     try:
         if not os.path.exists(SENT_POSTS_FILE):
-            logging.info(f"{SENT_POSTS_FILE}不存在，初始化空列表")
             with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
                 json.dump([], f)
+            logging.info(f"初始化已推送文件：{SENT_POSTS_FILE}")
             return []
-        
         with open(SENT_POSTS_FILE, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-            if not content:
-                logging.info(f"{SENT_POSTS_FILE}为空，返回空列表")
-                return []
-            
-            tids = json.loads(content)
-            # 校验格式（整数列表）
-            if not isinstance(tids, list) or not all(isinstance(t, int) for t in tids):
-                logging.error(f"{SENT_POSTS_FILE}格式错误（非整数列表），重置为空")
-                with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
-                    json.dump([], f)
-                return []
-            
-            logging.info(f"读取到{len(tids)}条已推送TID：{tids[:5]}...")
-            return tids
-    except json.JSONDecodeError:
-        logging.error(f"{SENT_POSTS_FILE}解析失败（JSON格式错误），重置为空")
-        with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
-            json.dump([], f)
-        return []
+            tids = json.loads(f.read().strip() or "[]")
+            return [int(t) for t in tids if isinstance(t, int)]
     except Exception as e:
-        logging.error(f"读取已推送TID异常：{str(e)}，返回空列表")
+        logging.error(f"读取已推送TID失败：{str(e)}")
         return []
 
 def save_sent_tids(new_tids, existing_tids):
-    """合并新推送TID到已有列表（去重后保存）"""
     try:
-        # 去重+排序
-        all_tids = list(set(existing_tids + new_tids))
-        all_tids_sorted = sorted(all_tids)
-        
+        all_tids = sorted(list(set(existing_tids + new_tids)))
         with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(all_tids_sorted, f, ensure_ascii=False, indent=2)
-        
-        logging.info(f"更新推送记录：新增{len(new_tids)}条，总记录{len(all_tids_sorted)}条")
+            json.dump(all_tids, f, ensure_ascii=False, indent=2)
+        logging.info(f"已推送TID更新：新增{len(new_tids)}条，总计{len(all_tids)}条")
     except Exception as e:
-        logging.error(f"保存推送记录失败：{str(e)}")
+        logging.error(f"保存已推送TID失败：{str(e)}")
 
-# ====================== 3. RSS获取与新帖筛选 ======================
-def fetch_updates():
-    """获取RSS源，筛选未推送的新帖（TID不在已推送列表）"""
+def load_pending_data():
     try:
-        sent_tids = load_sent_tids()
-        logging.info(f"开始筛选新帖（排除{len(sent_tids)}个已推送TID）")
-        
-        # 解析RSS
+        if not os.path.exists(PENDING_POSTS_FILE):
+            with open(PENDING_POSTS_FILE, "w", encoding="utf-8") as f:
+                json.dump([], f)
+            logging.info(f"初始化待审核文件：{PENDING_POSTS_FILE}")
+            return []
+        if not os.access(PENDING_POSTS_FILE, os.R_OK):
+            raise PermissionError(f"无读取权限：{PENDING_POSTS_FILE}")
+        with open(PENDING_POSTS_FILE, "r", encoding="utf-8") as f:
+            content = f.read().strip() or "[]"
+            data = json.loads(content)
+        valid_data = []
+        for item in data:
+            if isinstance(item, dict) and "tid" in item:
+                valid_item = {
+                    "tid": int(item["tid"]),
+                    "title": item.get("title", "无标题"),
+                    "author": item.get("author", "未知用户"),
+                    "description": item.get("description", "无描述")  
+                }
+                valid_data.append(valid_item)
+            elif isinstance(item, int): 
+                valid_data.append({
+                    "tid": item,
+                    "title": "无标题",
+                    "author": "未知用户",
+                    "description": "无描述"
+                })
+        logging.info(f"读取待审核数据：共{len(valid_data)}条 → TID列表：{[d['tid'] for d in valid_data]}")
+        return valid_data
+    except Exception as e:
+        logging.error(f"读取待审核数据失败：{str(e)}")
+        return []
+
+def save_pending_data(data):
+    try:
+        unique_data = []
+        seen_tids = set()
+        for item in sorted(data, key=lambda x: x["tid"]):
+            tid = item["tid"]
+            if tid not in seen_tids:
+                seen_tids.add(tid)
+                unique_data.append({
+                    "tid": tid,
+                    "title": item.get("title", "无标题").strip(),
+                    "author": item.get("author", "未知用户").strip(),
+                    "description": item.get("description", "无描述").strip()
+                })
+        temp_file = f"{PENDING_POSTS_FILE}.tmp"
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(unique_data, f, ensure_ascii=False, indent=2)
+        os.replace(temp_file, PENDING_POSTS_FILE)
+        logging.info(f"待审核数据更新：共{len(unique_data)}条 → TID列表：{[d['tid'] for d in unique_data]}")
+    except Exception as e:
+        logging.error(f"保存待审核数据失败：{str(e)}")
+        try:
+            with open(PENDING_POSTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(unique_data, f, ensure_ascii=False, indent=2)
+            logging.warning("备用方案：待审核数据已写入")
+        except:
+            pass
+
+# ====================== TID提取/RSS获取（核心修改）======================
+def extract_tid_from_url(url):
+    try:
+        match = re.search(r'thread-(\d+)\.htm', url)
+        return int(match.group(1)) if match else None
+    except Exception as e:
+        logging.error(f"提取TID失败：{str(e)}")
+        return None
+
+def fetch_updates(sent_tids, pending_tids):
+    try:
+        logging.info(f"筛选RSS新帖：排除已推送{len(sent_tids)}条 + 待审核{len(pending_tids)}条")
         feed = feedparser.parse(RSS_FEED_URL)
         if feed.bozo:
             logging.error(f"RSS解析失败：{feed.bozo_exception}")
             return None
         
-        # 筛选有效新帖
         valid_entries = []
         for entry in feed.entries:
             link = entry.get("link", "").strip()
             if not link:
-                logging.debug("跳过无链接的RSS条目")
                 continue
-            
             tid = extract_tid_from_url(link)
             if not tid:
                 continue
-            
-            # 仅保留未推送的TID
-            if tid not in sent_tids:
+            if tid not in sent_tids and tid not in pending_tids:
                 entry["tid"] = tid
+                entry["rss_title"] = entry.get("title", "无标题").strip() 
+                author = entry.get("author") or entry.get("dc_author") or \
+                         entry.get("dc", {}).get("creator") or entry.get("dc_creator") or entry.get("creator")
+                entry["rss_author"] = author.strip() if (author and str(author).strip()) else "未知用户"
+                desc = entry.get("description", "无描述").strip()
+                entry["rss_description"] = re.sub(r'<[^>]+>', '', desc)  
+                logging.debug(f"TID={tid} 作者提取：{entry['rss_author']}（来源：author/dc_author等）")
                 valid_entries.append(entry)
-                logging.debug(f"新增待推送：TID={tid}，标题：{entry.get('title', '无标题')[:30]}...")
-            else:
-                logging.debug(f"跳过已推送：TID={tid}")
         
-        logging.info(f"筛选完成：共{len(valid_entries)}条新帖待推送")
-        return valid_entries
+        logging.info(f"RSS筛选完成：共{len(valid_entries)}条全新待推送帖")
+        return sorted(valid_entries, key=lambda x: x["tid"])
     except Exception as e:
         logging.error(f"获取RSS异常：{str(e)}")
         return None
 
-# ====================== 4. 网页图片提取（返回全部有效图片）======================
-async def get_images_from_webpage(session, webpage_url):
-    """从帖子页面提取所有有效图片（处理懒加载/相对路径）"""
+# ====================== 帖子信息获取 =======================
+async def get_post_status(session, webpage_url, tid):
+    status_code = 200
     try:
         headers = {
             "User-Agent": USER_AGENT,
             "Referer": FIXED_PROJECT_URL,
-            "Accept": "image/avif,image/webp,*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9"
+            "Accept": "text/html,application/xhtml+xml"
         }
-        
-        # 请求帖子页面
         async with session.get(webpage_url, headers=headers, timeout=20) as resp:
+            status_code = resp.status
             if resp.status != 200:
-                logging.warning(f"帖子请求失败（状态码：{resp.status}）：{webpage_url[:50]}...")
-                return []
+                logging.warning(f"TID={tid} 帖子请求失败（状态码：{resp.status}）")
+                return [], False, status_code
             html = await resp.text()
-        
-        # 解析图片标签
+
         soup = BeautifulSoup(html, "html.parser")
-        target_divs = soup.find_all("div", class_="message break-all", isfirst="1")
+        is_pending = False
+
+        audit_h4_tags = soup.find_all("h4", class_=re.compile(r"card-title"))
+        audit_pattern = re.compile(r"本帖正在审核中.*您无权查看", re.DOTALL | re.UNICODE)
+        for h4_tag in audit_h4_tags:
+            if audit_pattern.search(h4_tag.get_text(strip=True)):
+                is_pending = True
+                break
+        if not is_pending and audit_pattern.search(html):
+            is_pending = True
+
+        if is_pending:
+            logging.info(f"TID={tid} 确认待审核状态")
+            return [], True, status_code
+
+        target_divs = soup.find_all("div", class_="message break-all", isfirst="1") or soup.find_all("div", class_="message break-all")
         if not target_divs:
-            logging.warning(f"未找到图片所在的目标div：{webpage_url[:50]}...")
-            return []
-        
+            logging.warning(f"TID={tid} 未找到正文div，无图片")
+            return [], False, status_code
+
         images = []
-        base_domain = "/".join(webpage_url.split("/")[:3])  # 提取域名（如https://tyw29.cc）
-        
+        base_domain = "/".join(webpage_url.split("/")[:3])
         for div in target_divs:
-            img_tags = div.find_all("img")
-            logging.info(f"目标div找到{len(img_tags)}个img标签（TID：{extract_tid_from_url(webpage_url)}）")
-            
-            for img in img_tags:
-                # 优先取懒加载地址（data-src），再取src
+            for img in div.find_all("img"):
                 img_url = img.get("data-src", "").strip() or img.get("src", "").strip()
-                
-                # 过滤无效链接（base64/JS链接）
                 if not img_url or img_url.startswith(("data:image/", "javascript:")):
                     continue
-                
-                # 处理相对路径
                 if img_url.startswith("/"):
                     img_url = f"{base_domain}{img_url}"
-                elif not img_url.startswith(("http://", "https://")):
+                elif not img_url.startswith(("http", "https")):
                     img_url = f"{base_domain}/{img_url}"
-                
-                # 去重并添加有效URL
-                if img_url.startswith(("http://", "https://")) and img_url not in images:
+                if img_url not in images and img_url.startswith(("http", "https")):
                     images.append(img_url)
-                    logging.info(f"提取到图片{len(images)}：{img_url[:60]}...")
-        
-        # 返回所有图片（最多MAX_IMAGES_PER_MSG张）
-        final_images = images[:MAX_IMAGES_PER_MSG]
-        logging.info(f"从{webpage_url[:50]}...提取{len(images)}张图片，最终保留{len(final_images)}张")
-        return final_images
-    except Exception as e:
-        logging.error(f"提取图片异常：{str(e)}，URL：{webpage_url[:50]}...")
-        return []
 
-# ====================== 5. Markdown特殊字符转义 ======================
+        final_images = images[:MAX_IMAGES_PER_MSG]
+        logging.info(f"TID={tid} 图片提取完成：共{len(images)}张，保留前{len(final_images)}张")
+        return final_images, False, status_code
+    except Exception as e:
+        logging.error(f"TID={tid} 帖子信息获取异常：{str(e)}")
+        return [], False, status_code
+
+# ====================== Markdown转义/消息构造 =======================
 def escape_markdown(text):
-    """转义Markdown格式字符（避免文本错乱，不转义@）"""
     special_chars = r"_*~`>#+!()"
     for char in special_chars:
         if char in text:
             text = text.replace(char, f"\{char}")
     return text
 
-# ====================== 6. 消息发送：单图+文字（sendPhoto）=======================
-async def send_single_photo_with_caption(session, image_url, caption, delay=5):
-    """单张图片时用sendPhoto发送（带文字说明）"""
+def build_caption(title, author, description, link):
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        description = description[:MAX_DESCRIPTION_LENGTH] + "..."
+    footer = """
+✅论坛最新地址: 
+tyw29.cc  tyw30.cc tyw33.cc
+✅点击加入交流群: https://www.sfw.vc/tyw666
+✅天涯论坛（唯一联系）方式：
+沈复： @tywcc
+沐泽： @ssss001
+怡怡： @yiyi3
+    """.strip()
+    return (
+        f"{escape_markdown(title)}\n"
+        f"由 ＠{escape_markdown(author)} 发起的话题讨论\n"
+        f"{escape_markdown(description)}\n"  
+        f"链接：{link}\n\n"
+        f"{footer}"
+    )
+
+# ====================== 消息发送函数 ========================
+async def send_single_photo(session, image_url, caption, tid, delay=5):
     try:
         await asyncio.sleep(delay)
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendPhoto"
-        logging.info(f"\n=== 处理单图消息 ===")
-        logging.info(f"图片URL：{image_url[:60]}...")
-        logging.info(f"文字说明：{caption[:50]}...")
-
-        # 1. 下载图片二进制数据
-        img_headers = {
-            "User-Agent": USER_AGENT,
-            "Referer": FIXED_PROJECT_URL
-        }
-        async with session.get(
-            image_url,
-            headers=img_headers,
-            timeout=IMAGE_DOWNLOAD_TIMEOUT,
-            ssl=False
-        ) as img_resp:
-            if img_resp.status != 200:
-                logging.error(f"图片下载失败（状态码：{img_resp.status}）")
+        async with session.get(image_url, headers={"User-Agent": USER_AGENT}, timeout=15) as resp:
+            img_data = await resp.read()
+            if not is_valid_image(img_data):
                 return False
-            img_data = await img_resp.read()
-            img_content_type = img_resp.headers.get("Content-Type", "image/jpeg")
-            logging.info(f"图片下载成功：大小{len(img_data)}字节，类型{img_content_type}")
-
-        # 2. 构造multipart/form-data请求体
+            content_type = resp.headers.get("Content-Type") or get_image_content_type(image_url)
         boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
-        chat_id_str = str(SAFEW_CHAT_ID)
-        # 生成唯一文件名（避免特殊字符）
-        filename = f"single_img_{uuid.uuid4().hex[:8]}_{image_url.split('/')[-1].split('?')[0]}"
-        filename = filename.replace('"', '').replace("'", "").replace(" ", "_")
-
-        # 文本字段（chat_id + caption）
-        text_parts = [
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="chat_id"\r\n\r\n{chat_id_str}\r\n',
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="caption"\r\n\r\n{caption}\r\n'
-        ]
-        text_part = "".join(text_parts).encode("utf-8")
-
-        # 图片文件字段
-        file_part_header = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'
-            f"Content-Type: {img_content_type}\r\n\r\n"
-        ).encode("utf-8")
-        end_part = f"\r\n--{boundary}--\r\n".encode("utf-8")
-        body = text_part + file_part_header + img_data + end_part
-
-        # 3. 发送请求
-        headers = {
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "User-Agent": USER_AGENT,
-            "Content-Length": str(len(body))
-        }
-        async with session.post(
-            api_url,
-            data=body,
-            headers=headers,
-            timeout=MSG_SEND_TIMEOUT,
-            ssl=False
-        ) as response:
-            response_text = await response.text(encoding="utf-8", errors="replace")
-            if response.status == 200:
-                logging.info("✅ 单图+文字消息发送成功")
+        filename = f"single_{tid}_{uuid.uuid4().hex[:8]}.jpg"
+        body = b"\r\n".join([
+            f"--{boundary}".encode("utf-8"),
+            b'Content-Disposition: form-data; name="chat_id"',
+            b'',
+            str(SAFEW_CHAT_ID).encode("utf-8"),
+            f"--{boundary}".encode("utf-8"),
+            b'Content-Disposition: form-data; name="caption"',
+            b'',
+            caption.encode("utf-8"),
+            f"--{boundary}".encode("utf-8"),
+            f'Content-Disposition: form-data; name="photo"; filename="{filename}"'.encode("utf-8"),
+            f"Content-Type: {content_type}".encode("utf-8"),
+            b'',
+            img_data,
+            f"--{boundary}--".encode("utf-8")
+        ])
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        async with session.post(api_url, data=body, headers=headers, timeout=30) as resp:
+            if resp.status == 200:
+                logging.info(f"TID={tid} ✅ 单图消息发送成功")
                 return True
-            logging.error(f"❌ 单图消息发送失败（{response.status}）：{response_text[:150]}...")
+            logging.error(f"TID={tid} ❌ 单图失败：{await resp.text()[:200]}")
             return False
     except Exception as e:
-        logging.error(f"❌ 单图消息发送异常：{str(e)}")
+        logging.error(f"TID={tid} 单图发送异常：{str(e)}")
         return False
 
-# ====================== 7. 消息发送：多图+文字（sendMediaGroup，2-10张）=======================
-async def send_media_group(session, image_urls, caption, delay=5):
-    """多图时用sendMediaGroup发送（单条消息，2-10张图+全局文字）"""
-    # 校验图片数量（符合官方API要求）
+async def send_media_group(session, image_urls, caption, tid, delay=5):
     if len(image_urls) < 2 or len(image_urls) > MAX_IMAGES_PER_MSG:
-        logging.error(f"❌ 多图数量无效：需2-{MAX_IMAGES_PER_MSG}张，当前{len(image_urls)}张")
         return False
-    
     try:
         await asyncio.sleep(delay)
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendMediaGroup"
-        logging.info(f"\n=== 处理多图消息（共{len(image_urls)}张）===")
-        logging.info(f"文字说明：{caption[:50]}...")
-
-        # 1. 批量下载所有图片
-        img_datas = []
+        media_data = []
         for idx, img_url in enumerate(image_urls, 1):
-            try:
-                img_headers = {
-                    "User-Agent": USER_AGENT,
-                    "Referer": FIXED_PROJECT_URL
-                }
-                async with session.get(
-                    img_url,
-                    headers=img_headers,
-                    timeout=IMAGE_DOWNLOAD_TIMEOUT,
-                    ssl=False
-                ) as img_resp:
-                    if img_resp.status != 200:
-                        logging.error(f"图片{idx}下载失败（{img_resp.status}）：{img_url[:50]}...")
-                        return False
-                    img_data = await img_resp.read()
-                    img_datas.append({
-                        "data": img_data,
-                        "content_type": img_resp.headers.get("Content-Type", "image/jpeg"),
-                        "filename": f"multi_img_{idx}_{uuid.uuid4().hex[:8]}.jpg"  # 唯一文件名
-                    })
-                logging.info(f"图片{idx}下载成功：大小{len(img_data)}字节")
-            except Exception as e:
-                logging.error(f"图片{idx}下载异常：{str(e)}，URL：{img_url[:50]}...")
-                return False
-
-        # 2. 生成multipart分隔符
-        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
-        chat_id_str = str(SAFEW_CHAT_ID)
-        body_parts = []
-
-        # 3. 添加必填字段（chat_id + caption）
-        body_parts.extend([
-            f"--{boundary}",
-            'Content-Disposition: form-data; name="chat_id"',
-            '',  # 空行分隔头和内容
-            chat_id_str,
-            f"--{boundary}",
-            'Content-Disposition: form-data; name="caption"',
-            '',
-            caption
-        ])
-
-        # 4. 构造media数组（InputMediaPhoto）+ 图片文件字段
+            filename = f"media_{tid}_{idx}_{uuid.uuid4().hex[:8]}.jpg"
+            async with session.get(img_url, headers={"User-Agent": USER_AGENT}, timeout=15) as resp:
+                img_data = await resp.read()
+                if not is_valid_image(img_data):
+                    return False
+                content_type = resp.headers.get("Content-Type") or get_image_content_type(img_url)
+            media_data.append((img_data, content_type, filename))
+        
         media_array = []
-        for idx, img in enumerate(img_datas, 1):
-            # media数组元素：关联图片文件（attach://文件名）
-            media_array.append({
-                "type": "photo",
-                "media": f"attach://{img['filename']}"
-            })
-            # 添加图片文件字段
+        for idx, (_, ct, fn) in enumerate(media_data):
+            item = {"type": "photo", "media": f"attach://{fn}", "parse_mode": "Markdown"}
+            if idx == 0:
+                item["caption"] = caption
+            media_array.append(item)
+        
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
+        body_parts = [
+            f"--{boundary}".encode("utf-8"),
+            b'Content-Disposition: form-data; name="chat_id"',
+            b'',
+            str(SAFEW_CHAT_ID).encode("utf-8"),
+            f"--{boundary}".encode("utf-8"),
+            b'Content-Disposition: form-data; name="media"',
+            b'Content-Type: application/json',
+            b'',
+            json.dumps(media_array, ensure_ascii=False).encode("utf-8")
+        ]
+        for img_data, ct, fn in media_data:
             body_parts.extend([
-                f"--{boundary}",
-                f'Content-Disposition: form-data; name="photo{idx}"; filename="{img["filename"]}"',
-                f"Content-Type: {img['content_type']}",
-                '',
-                img["data"].decode("latin-1")  # 二进制转latin-1兼容编码
+                f"--{boundary}".encode("utf-8"),
+                f'Content-Disposition: form-data; name="{fn}"; filename="{fn}"'.encode("utf-8"),
+                f"Content-Type: {ct}".encode("utf-8"),
+                b'',
+                img_data
             ])
-
-        # 5. 添加media数组JSON字段（官方要求）
-        body_parts.extend([
-            f"--{boundary}",
-            'Content-Disposition: form-data; name="media"',
-            'Content-Type: application/json',
-            '',
-            json.dumps(media_array, ensure_ascii=False)
-        ])
-
-        # 6. 结束符
-        body_parts.append(f"--{boundary}--")
-
-        # 7. 拼接请求体（用\r\n分隔，编码为字节流）
-        body = "\r\n".join(body_parts).encode("latin-1")
-        logging.info(f"请求体构造完成：总大小{len(body)}字节")
-
-        # 8. 发送请求
-        headers = {
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "User-Agent": USER_AGENT,
-            "Content-Length": str(len(body))
-        }
-        async with session.post(
-            api_url,
-            data=body,
-            headers=headers,
-            timeout=MSG_SEND_TIMEOUT,
-            ssl=False
-        ) as response:
-            response_text = await response.text(encoding="utf-8", errors="replace")
-            response_summary = response_text[:150] + "..." if len(response_text) > 150 else response_text
-            if response.status == 200:
-                logging.info(f"✅ 多图消息发送成功（{len(image_urls)}张图）")
+        body_parts.append(f"--{boundary}--".encode("utf-8"))
+        body = b"\r\n".join(body_parts)
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        async with session.post(api_url, data=body, headers=headers, timeout=30) as resp:
+            if resp.status == 200:
+                logging.info(f"TID={tid} ✅ 多图消息发送成功")
                 return True
-            logging.error(f"❌ 多图消息发送失败（{response.status}）：{response_summary}")
+            logging.error(f"TID={tid} ❌ 多图失败：{await resp.text()[:200]}")
             return False
     except Exception as e:
-        logging.error(f"❌ 多图消息发送总异常：{str(e)}")
+        logging.error(f"TID={tid} 多图发送异常：{str(e)}")
         return False
 
-# ====================== 8. 消息发送：纯文本（无图时）=======================
-async def send_text(session, caption, delay=5):
-    """无图片时发送纯文本消息"""
+async def send_text_msg(session, caption, tid, delay=5):
     try:
         await asyncio.sleep(delay)
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendMessage"
-        logging.info(f"\n=== 处理纯文本消息 ===")
-        logging.info(f"文本内容：{caption[:50]}...")
-
-        # 构造请求体
         payload = {
             "chat_id": SAFEW_CHAT_ID,
             "text": caption,
             "parse_mode": "Markdown",
-            "disable_web_page_preview": True,  # 禁用链接预览
-            "disable_notification": False     # 启用消息通知
+            "disable_web_page_preview": True
         }
-
-        # 发送请求
-        async with session.post(
-            api_url,
-            json=payload,
-            timeout=MSG_SEND_TIMEOUT,
-            ssl=False
-        ) as response:
-            response_text = await response.text(encoding="utf-8", errors="replace")
-            if response.status == 200:
-                logging.info("✅ 纯文本消息发送成功")
+        async with session.post(api_url, json=payload, timeout=15) as resp:
+            if resp.status == 200:
+                logging.info(f"TID={tid} ✅ 纯文本发送成功")
                 return True
-            logging.error(f"❌ 纯文本消息发送失败（{response.status}）：{response_text[:150]}...")
+            logging.error(f"TID={tid} ❌ 文本失败：{await resp.text()[:200]}")
             return False
     except Exception as e:
-        logging.error(f"❌ 纯文本消息发送异常：{str(e)}")
+        logging.error(f"TID={tid} 文本发送异常：{str(e)}")
         return False
 
-# ====================== 9. 核心推送逻辑（按图片数量分支处理）======================
-async def check_for_updates():
-    """检查新帖、分支发送消息、更新推送记录"""
-    # 获取待推送新帖
-    rss_entries = fetch_updates()
-    if not rss_entries:
-        logging.info("无新帖待推送，脚本结束")
+# ====================== 待审核数据检查 =======================
+async def check_pending_data(session):
+    pending_data = load_pending_data()
+    if not pending_data:
+        logging.info("无待审核数据，跳过检查")
         return
 
-    # 按TID升序排序（顺序浏览）
-    rss_entries_sorted = sorted(rss_entries, key=lambda x: x["tid"])
-    logging.info(f"新帖按TID升序：{[e['tid'] for e in rss_entries_sorted]}")
+    logging.info(f"\n=== 开始检查待审核数据（共{len(pending_data)}条 → {[d['tid'] for d in pending_data]}）===")
+    sent_tids = load_sent_tids()
+    passed_tids = []
+    still_pending = []
+    deleted_tids = []
 
-    # 限制单次推送数量
-    push_entries = rss_entries_sorted[:MAX_PUSH_PER_RUN]
-    logging.info(f"本次推送{len(push_entries)}条帖子：{[e['tid'] for e in push_entries]}")
-
-    # 异步发送
-    async with aiohttp.ClientSession() as session:
-        existing_tids = load_sent_tids()
-        newly_pushed_tids = []  # 记录本次推送成功的TID
+    for item in pending_data:
+        tid = item["tid"]
+        link = f"{FIXED_PROJECT_URL}thread-{tid}.htm"
+        logging.info(f"检查TID={tid} 审核状态：{link[:50]}...")
         
-        for i, entry in enumerate(push_entries):
-            link = entry.get("link", "").strip()
-            tid = entry["tid"]
-            title = entry.get("title", "无标题").strip()
-            author = entry.get("author", entry.get("dc_author", "未知用户")).strip()
-            # 不同帖子间的发送间隔（避免频率限制）
-            post_delay = 5 if i > 0 else 0
+        images, is_pending, status_code = await get_post_status(session, link, tid)
 
-            # 1. 构造文字内容（全角＠避免跳转）
-            title_escaped = escape_markdown(title)
-            author_escaped = escape_markdown(author)
-            caption = (
-                f"{title_escaped}\n"
-                f"由 ＠{author_escaped} 发起的话题讨论\n"
-                f"链接：{link}\n\n"
-                f"项目地址：{FIXED_PROJECT_URL}"
-            )
+        if status_code == 404:
+            deleted_tids.append(tid)
+            logging.warning(f"TID={tid} 帖子已删除（404），从待审核移除")
+            continue
 
-            # 2. 提取图片
-            images = await get_images_from_webpage(session, link)
-            send_success = False
+        if status_code != 200:
+            still_pending.append(item)
+            logging.warning(f"TID={tid} 请求异常（{status_code}），保留待审核")
+            continue
 
-            # 3. 按图片数量分支发送
-            if len(images) == 1:
-                # 单图：sendPhoto
-                send_success = await send_single_photo_with_caption(session, images[0], caption, post_delay)
-            elif 2 <= len(images) <= MAX_IMAGES_PER_MSG:
-                # 多图（2-10张）：sendMediaGroup
-                send_success = await send_media_group(session, images, caption, post_delay)
-            elif len(images) > MAX_IMAGES_PER_MSG:
-                # 超10张：取前10张用多图接口
-                send_success = await send_media_group(session, images[:MAX_IMAGES_PER_MSG], caption, post_delay)
-            else:
-                # 无图：纯文本
-                send_success = await send_text(session, caption, post_delay)
+        if is_pending:
+            still_pending.append(item)
+            logging.info(f"TID={tid} 仍待审核，保留")
+            continue
 
-            # 4. 记录成功推送的TID
-            if send_success:
-                newly_pushed_tids.append(tid)
-                logging.info(f"✅ 帖子推送完成（TID：{tid}）")
-            else:
-                logging.warning(f"❌ 帖子推送失败（TID：{tid}）")
+        caption = build_caption(
+            title=item["title"],
+            author=item["author"],
+            description=item["description"],
+            link=link
+        )
+        
+        success = False
+        if len(images) == 1:
+            success = await send_single_photo(session, images[0], caption, tid, delay=3)
+        elif 2 <= len(images) <= MAX_IMAGES_PER_MSG:
+            success = await send_media_group(session, images, caption, tid, delay=3)
+        else:
+            success = await send_text_msg(session, caption, tid, delay=3)
 
-    # 5. 更新推送记录
-    if newly_pushed_tids:
-        save_sent_tids(newly_pushed_tids, existing_tids)
+        if success:
+            passed_tids.append(tid)
+            sent_tids.append(tid)
+            logging.info(f"TID={tid} 审核通过推送成功（标题：{item['title'][:20]}...）")
+        else:
+            still_pending.append(item)
+            logging.warning(f"TID={tid} 推送失败，保留待重试")
+
+    save_pending_data(still_pending)
+    if passed_tids:
+        save_sent_tids(passed_tids, sent_tids)
+    logging.info(f"待审核检查完成：{len(passed_tids)}条通过，{len(still_pending)}条待审，{len(deleted_tids)}条删除")
+
+# ====================== 全新帖子推送 =======================
+async def push_new_posts(session, new_entries):
+    if not new_entries:
+        logging.info("无全新帖子待推送")
+        return
+
+    logging.info(f"\n=== 开始推送全新帖子（共{len(new_entries)}条）===")
+    sent_tids = load_sent_tids()
+    pending_data = load_pending_data()
+    success_pushed = []
+
+    for i, entry in enumerate(new_entries):
+        tid = entry["tid"]
+        link = entry["link"]
+        delay = 5 if i > 0 else 0
+
+        rss_title = entry["rss_title"]
+        rss_author = entry["rss_author"]
+        rss_description = entry["rss_description"]
+        logging.debug(f"TID={tid} RSS信息：标题={rss_title[:20]}，作者={rss_author}，描述={rss_description[:30]}...")
+
+        images, is_pending, status_code = await get_post_status(session, link, tid)
+        
+        if status_code == 404:
+            logging.warning(f"TID={tid} 帖子已删除（404），跳过")
+            continue
+        
+        if status_code != 200:
+            logging.warning(f"TID={tid} 请求异常（{status_code}），跳过")
+            continue
+
+        if is_pending:
+            pending_data.append({
+                "tid": tid,
+                "title": rss_title,
+                "author": rss_author,
+                "description": rss_description
+            })
+            save_pending_data(pending_data)
+            logging.info(f"TID={tid} 新增待审核（标题：{rss_title[:20]}... 作者：{rss_author}）")
+            continue
+
+        caption = build_caption(
+            title=rss_title,
+            author=rss_author,
+            description=rss_description,
+            link=link
+        )
+        
+        success = False
+        if len(images) == 1:
+            success = await send_single_photo(session, images[0], caption, tid, delay)
+        elif 2 <= len(images) <= MAX_IMAGES_PER_MSG:
+            success = await send_media_group(session, images, caption, tid, delay)
+        else:
+            success = await send_text_msg(session, caption, tid, delay)
+
+        if success:
+            success_pushed.append(tid)
+            sent_tids.append(tid)
+            logging.info(f"TID={tid} 全新帖子推送成功（作者：{rss_author}）")
+
+    if success_pushed:
+        save_sent_tids(success_pushed, sent_tids)
     else:
-        logging.info("无成功推送的帖子，不更新记录")
+        logging.info("无全新帖子推送成功")
 
-# ====================== 10. 主函数（脚本入口）======================
+# ====================== 主逻辑 =======================
+async def check_for_updates():
+    async with aiohttp.ClientSession() as session:
+        await check_pending_data(session)
+        sent_tids = load_sent_tids()
+        pending_tids = [d["tid"] for d in load_pending_data()]
+        new_entries = fetch_updates(sent_tids, pending_tids)
+        if new_entries:
+            await push_new_posts(session, new_entries[:MAX_PUSH_PER_RUN])
+
 async def main():
     logging.info("===== SafeW RSS推送脚本启动 =====")
-    
-    # 基础配置校验
-    config_check = True
-    if not SAFEW_BOT_TOKEN or ":" not in SAFEW_BOT_TOKEN:
-        logging.error("❌ 错误：SAFEW_BOT_TOKEN格式无效（应为「数字:字符」）")
-        config_check = False
-    if not SAFEW_CHAT_ID:
-        logging.error("❌ 错误：未配置SAFEW_CHAT_ID（目标群组ID）")
-        config_check = False
-    if not RSS_FEED_URL:
-        logging.error("❌ 错误：未配置RSS_FEED_URL（RSS源地址）")
-        config_check = False
-    if not config_check:
-        logging.error("❌ 基础配置错误，脚本终止")
+    if not all([SAFEW_BOT_TOKEN, SAFEW_CHAT_ID, RSS_FEED_URL]):
+        logging.error("❌ 缺少环境变量，终止")
         return
 
-    # 依赖版本提示
-    logging.info(f"当前aiohttp版本：{aiohttp.__version__}（推荐≥3.8.0）")
-    if aiohttp.__version__ < "3.8.0":
-        logging.warning("⚠️ 警告：aiohttp版本过低，可能存在兼容问题")
+    if not os.path.exists(PENDING_POSTS_FILE):
+        save_pending_data([])
+        logging.info(f"初始化待审核文件：{PENDING_POSTS_FILE}")
 
-    # 执行推送逻辑
     try:
         await check_for_updates()
     except Exception as e:
-        logging.error(f"❌ 核心推送逻辑异常：{str(e)}")
-    
-    logging.info("===== SafeW RSS推送脚本结束 =====")
+        logging.error(f"❌ 核心逻辑异常：{str(e)}")
+    logging.info("===== 脚本运行结束 =====")
 
 if __name__ == "__main__":
     asyncio.run(main())
