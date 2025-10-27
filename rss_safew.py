@@ -5,14 +5,14 @@ import json
 import os
 import aiohttp
 import uuid
-import re  # 用于提取TID
+import re
 from bs4 import BeautifulSoup
 
 # ====================== 环境配置 =======================
 SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
 SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
 RSS_FEED_URL = os.getenv("RSS_FEED_URL")
-MAX_TID_FILE = "max_tid.json"  # 存储最大TID的文件
+PUSHED_TIDS_FILE = "pushed_tids.json"  # 存储所有已推送TID的列表
 MAX_PUSH_PER_RUN = 5
 FIXED_PROJECT_URL = "https://tyw29.cc/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -23,79 +23,73 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ====================== 1. TID提取（强化正则，确保准确）=======================
+# ====================== 1. TID提取（不变）=======================
 def extract_tid_from_url(url):
-    """从URL提取TID（强化正则，适配可能的URL格式）"""
     try:
-        # 正则匹配：thread-数字.htm（允许数字前后有非数字字符，仅取连续数字）
         match = re.search(r'thread-(\d+)\.htm', url)
         if match:
             tid = int(match.group(1))
-            logging.debug(f"从URL提取TID成功：{url} → {tid}")  # 调试日志
+            logging.debug(f"提取TID：{url} → {tid}")
             return tid
-        logging.warning(f"无法提取TID：{url}（URL格式不符合thread-数字.htm）")
+        logging.warning(f"无法提取TID：{url}")
         return None
     except Exception as e:
-        logging.error(f"提取TID失败（{url}）：{str(e)}")
+        logging.error(f"提取TID失败：{str(e)}")
         return None
 
-# ====================== 2. TID存储/读取（修复文件读写逻辑）======================
-def load_max_tid():
-    """读取最大TID（确保文件存在且内容正确）"""
+# ====================== 2. 已推送TID的存储/读取（核心修改）======================
+def load_pushed_tids():
+    """读取所有已推送的TID列表（无记录则返回空列表）"""
     try:
-        # 检查文件是否存在，不存在则创建并返回0
-        if not os.path.exists(MAX_TID_FILE):
-            logging.info(f"{MAX_TID_FILE}不存在，创建并初始化最大TID为0")
-            with open(MAX_TID_FILE, "w", encoding="utf-8") as f:
-                f.write("0")
-            return 0
+        if not os.path.exists(PUSHED_TIDS_FILE):
+            logging.info(f"{PUSHED_TIDS_FILE}不存在，初始化空列表")
+            with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+                json.dump([], f)
+            return []
         
-        # 读取文件内容
-        with open(MAX_TID_FILE, "r", encoding="utf-8") as f:
+        with open(PUSHED_TIDS_FILE, "r", encoding="utf-8") as f:
             content = f.read().strip()
-        
-        # 验证内容是否为数字
-        if not content.isdigit():
-            logging.error(f"{MAX_TID_FILE}内容无效（非数字）：{content}，重置为0")
-            with open(MAX_TID_FILE, "w", encoding="utf-8") as f:
-                f.write("0")
-            return 0
-        
-        max_tid = int(content)
-        logging.info(f"成功读取最大TID：{max_tid}（文件：{MAX_TID_FILE}）")
-        return max_tid
+            if not content:
+                return []
+            tids = json.loads(content)
+            # 验证列表元素是否为整数
+            if not isinstance(tids, list) or not all(isinstance(t, int) for t in tids):
+                logging.error(f"{PUSHED_TIDS_FILE}格式错误（非整数列表），重置为空列表")
+                with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+                return []
+            logging.info(f"读取到已推送TID列表（共{len(tids)}条）：{tids[:5]}...")  # 只显示前5条避免过长
+            return tids
+    except json.JSONDecodeError:
+        logging.error(f"{PUSHED_TIDS_FILE}解析失败，重置为空列表")
+        with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
+        return []
     except Exception as e:
-        logging.error(f"读取最大TID失败：{str(e)}，强制返回0")
-        return 0
+        logging.error(f"读取已推送TID失败：{str(e)}，返回空列表")
+        return []
 
-def save_max_tid(new_max_tid):
-    """保存最大TID（确保写入成功）"""
+def save_pushed_tids(new_tids, existing_tids):
+    """将新推送的TID添加到已有列表（去重后保存）"""
     try:
-        # 验证新TID是否为有效数字
-        if not isinstance(new_max_tid, int) or new_max_tid < 0:
-            logging.error(f"无效的新TID：{new_max_tid}，拒绝保存")
-            return
-        
-        # 写入文件（覆盖原有内容）
-        with open(MAX_TID_FILE, "w", encoding="utf-8") as f:
-            f.write(str(new_max_tid))
-        
-        # 验证写入结果
-        with open(MAX_TID_FILE, "r", encoding="utf-8") as f:
-            saved = f.read().strip()
-        if saved == str(new_max_tid):
-            logging.info(f"成功保存最大TID：{new_max_tid}（文件：{MAX_TID_FILE}）")
-        else:
-            logging.error(f"保存TID失败：预期{new_max_tid}，实际保存{saved}")
+        # 合并列表并去重（保持整数类型）
+        all_tids = list(set(existing_tids + new_tids))
+        # 排序（方便查看，不影响功能）
+        all_tids_sorted = sorted(all_tids)
+        # 保存
+        with open(PUSHED_TIDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(all_tids_sorted, f, ensure_ascii=False, indent=2)
+        logging.info(f"已更新推送记录：新增{len(new_tids)}条，总记录{len(all_tids_sorted)}条")
     except Exception as e:
-        logging.error(f"保存最大TID异常：{str(e)}")
+        logging.error(f"保存推送记录失败：{str(e)}")
 
-# ====================== 3. RSS获取与筛选（严格过滤旧帖）======================
+# ====================== 3. RSS获取与筛选（基于TID列表筛选）======================
 def fetch_updates():
-    """获取RSS并筛选TID > 当前最大TID的新帖"""
+    """获取RSS并筛选出不在已推送列表中的新帖"""
     try:
-        current_max_tid = load_max_tid()
-        logging.info(f"开始筛选新帖（TID > {current_max_tid}）")
+        # 读取已推送TID列表
+        pushed_tids = load_pushed_tids()
+        logging.info(f"开始筛选新帖（排除已推送的{len(pushed_tids)}个TID）")
         
         feed = feedparser.parse(RSS_FEED_URL)
         if feed.bozo:
@@ -106,22 +100,21 @@ def fetch_updates():
         for entry in feed.entries:
             link = entry.get("link", "").strip()
             if not link:
-                logging.debug("跳过无链接的条目")
                 continue
             
             tid = extract_tid_from_url(link)
             if not tid:
                 continue  # 跳过无法提取TID的条目
             
-            # 严格筛选：仅保留TID > 当前最大TID的条目
-            if tid > current_max_tid:
+            # 筛选：TID不在已推送列表中
+            if tid not in pushed_tids:
                 entry["tid"] = tid
                 valid_entries.append(entry)
-                logging.debug(f"保留新帖：TID={tid}，链接={link}")
+                logging.debug(f"新增待推送：TID={tid}（不在已推送列表）")
             else:
-                logging.debug(f"跳过旧帖：TID={tid}（≤ 当前最大{current_max_tid}）")
+                logging.debug(f"跳过已推送：TID={tid}（已在列表中）")
         
-        logging.info(f"筛选完成：共{len(valid_entries)}条新帖（TID > {current_max_tid}）")
+        logging.info(f"筛选完成：共{len(valid_entries)}条新帖待推送")
         return valid_entries
     except Exception as e:
         logging.error(f"获取RSS异常：{str(e)}")
@@ -143,7 +136,6 @@ async def get_images_from_webpage(session, webpage_url):
         
         soup = BeautifulSoup(html, "html.parser")
         target_divs = soup.find_all("div", class_="message break-all", isfirst="1")
-        logging.info(f"找到目标div数量：{len(target_divs)}")
         if not target_divs:
             return []
         
@@ -170,10 +162,9 @@ async def get_images_from_webpage(session, webpage_url):
         logging.error(f"提取图片异常：{str(e)}")
         return []
 
-# ====================== 5. Markdown转义（移除@转义，避免反斜杠）======================
+# ====================== 5. Markdown转义（不变）======================
 def escape_markdown(text):
-    """仅转义影响格式的字符，不转义@（避免反斜杠）"""
-    special_chars = r"_*~`>#+!()"  # 移除@，避免转义后显示\@
+    special_chars = r"_*~`>#+!()"
     for char in special_chars:
         if char in text:
             text = text.replace(char, f"\{char}")
@@ -254,15 +245,15 @@ async def send_text(session, caption, delay=5):
         logging.error(f"文本发送异常：{str(e)}")
         return False
 
-# ====================== 8. 核心推送逻辑（修复排序+存储）======================
+# ====================== 8. 核心推送逻辑（按TID升序+全量存储）======================
 async def check_for_updates():
-    # 获取新帖
+    # 获取待推送新帖
     rss_entries = fetch_updates()
     if not rss_entries:
-        logging.info("无新帖，结束推送")
+        logging.info("无新帖待推送，结束")
         return
 
-    # 按TID升序排序（从小到大推送）
+    # 按TID升序排序（确保从小到大推送）
     rss_entries_sorted = sorted(rss_entries, key=lambda x: x["tid"])
     logging.info(f"新帖按TID升序：{[e['tid'] for e in rss_entries_sorted]}")
 
@@ -272,26 +263,30 @@ async def check_for_updates():
 
     # 发送并记录成功的TID
     async with aiohttp.ClientSession() as session:
-        pushed_tids = []
+        # 读取已有推送记录（用于后续合并）
+        existing_tids = load_pushed_tids()
+        # 记录本次推送成功的TID
+        newly_pushed_tids = []
+        
         for i, entry in enumerate(push_entries):
             link = entry["link"]
             tid = entry["tid"]
             title = entry.get("title", "无标题").strip()
             author = entry.get("author", "未知用户").strip()
 
-            # 构造文本（用全角＠替代半角@，避免跳转）
+            # 构造文本（用全角＠避免跳转）
             title_escaped = escape_markdown(title)
             author_escaped = escape_markdown(author)
             caption = (
                 f"{title_escaped}\n"
-                f"由 ＠{author_escaped} 发起的话题讨论\n"  # 全角＠，无跳转且无反斜杠
+                f"由 ＠{author_escaped} 发起的话题讨论\n"
                 f"链接：{link}\n\n"
                 f"项目地址：{FIXED_PROJECT_URL}"
             )
 
             # 发送
             images = await get_images_from_webpage(session, link)
-            delay = 5 if i > 0 else 0
+            delay = 5 if i > 0 else 0  # 间隔推送避免刷屏
             send_success = False
 
             if images:
@@ -300,15 +295,14 @@ async def check_for_updates():
                 send_success = await send_text(session, caption, delay)
 
             if send_success:
-                pushed_tids.append(tid)
-                logging.info(f"已推送TID：{tid}")
+                newly_pushed_tids.append(tid)
+                logging.info(f"✅ 已推送TID：{tid}")
 
-    # 更新最大TID（仅用成功推送的最大TID）
-    if pushed_tids:
-        new_max_tid = max(pushed_tids)
-        save_max_tid(new_max_tid)
+    # 保存新推送的TID（合并到已有列表并去重）
+    if newly_pushed_tids:
+        save_pushed_tids(newly_pushed_tids, existing_tids)
     else:
-        logging.info("无成功推送，不更新TID")
+        logging.info("无成功推送的TID，不更新记录")
 
 # ====================== 主函数 =======================
 async def main():
@@ -317,23 +311,23 @@ async def main():
     # 配置校验
     config_check = True
     if not SAFEW_BOT_TOKEN or ":" not in SAFEW_BOT_TOKEN:
-        logging.error("SAFEW_BOT_TOKEN无效")
+        logging.error("❌ SAFEW_BOT_TOKEN格式无效")
         config_check = False
     if not SAFEW_CHAT_ID:
-        logging.error("未配置SAFEW_CHAT_ID")
+        logging.error("❌ 未配置SAFEW_CHAT_ID")
         config_check = False
     if not RSS_FEED_URL:
-        logging.error("未配置RSS_FEED_URL")
+        logging.error("❌ 未配置RSS_FEED_URL")
         config_check = False
     if not config_check:
-        logging.error("配置错误，终止")
+        logging.error("❌ 基础配置错误，脚本终止")
         return
 
     # 执行推送
     try:
         await check_for_updates()
     except Exception as e:
-        logging.error(f"核心逻辑异常：{str(e)}")
+        logging.error(f"❌ 核心逻辑异常：{str(e)}")
     
     logging.info("===== 推送脚本结束 =====")
 
