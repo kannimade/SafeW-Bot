@@ -8,12 +8,11 @@ import uuid
 import re
 from bs4 import BeautifulSoup
 
-# ====================== 环境配置（统一变量名）======================
+# ====================== 环境配置 ======================
 SAFEW_BOT_TOKEN = os.getenv("SAFEW_BOT_TOKEN")
 SAFEW_CHAT_ID = os.getenv("SAFEW_CHAT_ID")
 RSS_FEED_URL = os.getenv("RSS_FEED_URL")
-# 统一存储文件变量名（关键修复1）
-SENT_POSTS_FILE = "sent_posts.json"  # 改为SENT_POSTS_FILE，与后续函数一致
+SENT_POSTS_FILE = "sent_posts.json"
 MAX_PUSH_PER_RUN = 5
 FIXED_PROJECT_URL = "https://tyw29.cc/"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -24,7 +23,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ====================== 1. TID提取（不变）=======================
+# ====================== TID提取 =======================
 def extract_tid_from_url(url):
     try:
         match = re.search(r'thread-(\d+)\.htm', url)
@@ -38,7 +37,7 @@ def extract_tid_from_url(url):
         logging.error(f"提取TID失败：{str(e)}")
         return None
 
-# ====================== 2. 已推送TID的存储/读取（修复变量名）======================
+# ====================== 已推送TID的存储/读取 ======================
 def load_sent_tids():
     """读取所有已推送的TID列表（存储在sent_posts.json）"""
     try:
@@ -73,20 +72,19 @@ def load_sent_tids():
 def save_sent_tids(new_tids, existing_tids):
     """将新推送的TID添加到sent_posts.json（去重后保存）"""
     try:
-        all_tids = list(set(existing_tids + new_tids))  # 去重
-        all_tids_sorted = sorted(all_tids)  # 排序
-        # 用已定义的SENT_POSTS_FILE（关键修复1）
+        all_tids = list(set(existing_tids + new_tids))  
+        all_tids_sorted = sorted(all_tids)  
         with open(SENT_POSTS_FILE, "w", encoding="utf-8") as f:
             json.dump(all_tids_sorted, f, ensure_ascii=False, indent=2)
         logging.info(f"已更新{SENT_POSTS_FILE}：新增{len(new_tids)}条，总记录{len(all_tids_sorted)}条")
     except Exception as e:
         logging.error(f"保存{SENT_POSTS_FILE}失败：{str(e)}")
 
-# ====================== 3. RSS获取与筛选（基于sent_posts.json筛选）======================
+# ====================== RSS获取与筛选 ======================
 def fetch_updates():
     """获取RSS并筛选出不在sent_posts.json中的新帖"""
     try:
-        sent_tids = load_sent_tids()  # 调用正确的函数名
+        sent_tids = load_sent_tids()  
         logging.info(f"开始筛选新帖（排除已推送的{len(sent_tids)}个TID）")
         
         feed = feedparser.parse(RSS_FEED_URL)
@@ -117,7 +115,7 @@ def fetch_updates():
         logging.error(f"获取RSS异常：{str(e)}")
         return None
         
-# ====================== 4. 图片提取（不变）======================
+# ====================== 图片提取 ======================
 async def get_images_from_webpage(session, webpage_url):
     try:
         headers = {
@@ -159,7 +157,7 @@ async def get_images_from_webpage(session, webpage_url):
         logging.error(f"提取图片异常：{str(e)}")
         return []
 
-# ====================== 5. Markdown转义（不变）======================
+# ====================== Markdown转义 ======================
 def escape_markdown(text):
     special_chars = r"_*~`>#+!()"
     for char in special_chars:
@@ -167,14 +165,13 @@ def escape_markdown(text):
             text = text.replace(char, f"\{char}")
     return text
 
-# ====================== 6. 图片+文字发送（不变）=======================
+# ====================== 图片+文字发送 =======================
 async def send_photo_with_caption(session, image_url, caption, delay=5):
     try:
         await asyncio.sleep(delay)
         api_url = f"https://api.safew.org/bot{SAFEW_BOT_TOKEN}/sendPhoto"
         logging.info(f"处理带文字的图片：{image_url[:60]}...")
 
-        # 下载图片
         img_headers = {"User-Agent": USER_AGENT, "Referer": FIXED_PROJECT_URL}
         async with session.get(image_url, headers=img_headers, timeout=15, ssl=False) as img_resp:
             if img_resp.status != 200:
@@ -183,7 +180,6 @@ async def send_photo_with_caption(session, image_url, caption, delay=5):
             img_data = await img_resp.read()
             img_content_type = img_resp.headers.get("Content-Type", "image/jpeg")
 
-        # 构造请求体
         boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
         chat_id_str = str(SAFEW_CHAT_ID)
         filename = image_url.split("/")[-1].split("?")[0].replace('"', '').replace("'", "").replace(" ", "_")
@@ -203,7 +199,6 @@ async def send_photo_with_caption(session, image_url, caption, delay=5):
         end_part = f"\r\n--{boundary}--\r\n".encode("utf-8")
         body = text_part + file_part_header + img_data + end_part
 
-        # 发送请求
         headers = {
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             "User-Agent": USER_AGENT,
@@ -220,7 +215,7 @@ async def send_photo_with_caption(session, image_url, caption, delay=5):
         logging.error(f"图片发送异常：{str(e)}")
         return False
 
-# ====================== 7. 纯文本发送（不变）=======================
+# ====================== 纯文本发送 =======================
 async def send_text(session, caption, delay=5):
     try:
         await asyncio.sleep(delay)
@@ -242,27 +237,21 @@ async def send_text(session, caption, delay=5):
         logging.error(f"文本发送异常：{str(e)}")
         return False
 
-# ====================== 8. 核心推送逻辑（修复函数名调用）======================
+# ====================== 核心推送逻辑 ======================
 async def check_for_updates():
-    # 获取待推送新帖
     rss_entries = fetch_updates()
     if not rss_entries:
         logging.info("无新帖待推送，结束")
         return
 
-    # 按TID升序排序（确保从小到大推送）
     rss_entries_sorted = sorted(rss_entries, key=lambda x: x["tid"])
     logging.info(f"新帖按TID升序：{[e['tid'] for e in rss_entries_sorted]}")
 
-    # 限制单次推送数量
     push_entries = rss_entries_sorted[:MAX_PUSH_PER_RUN]
     logging.info(f"本次推送{len(push_entries)}条：{[e['tid'] for e in push_entries]}")
 
-    # 发送并记录成功的TID
     async with aiohttp.ClientSession() as session:
-        # 调用正确的函数名load_sent_tids（关键修复2）
         existing_tids = load_sent_tids()
-        # 记录本次推送成功的TID
         newly_pushed_tids = []
         
         for i, entry in enumerate(push_entries):
@@ -271,7 +260,6 @@ async def check_for_updates():
             title = entry.get("title", "无标题").strip()
             author = entry.get("author", "未知用户").strip()
 
-            # 构造文本（用全角＠避免跳转）
             title_escaped = escape_markdown(title)
             author_escaped = escape_markdown(author)
             caption = (
@@ -281,9 +269,8 @@ async def check_for_updates():
                 f"项目地址：{FIXED_PROJECT_URL}"
             )
 
-            # 发送
             images = await get_images_from_webpage(session, link)
-            delay = 5 if i > 0 else 0  # 间隔推送避免刷屏
+            delay = 5 if i > 0 else 0  
             send_success = False
 
             if images:
@@ -295,7 +282,6 @@ async def check_for_updates():
                 newly_pushed_tids.append(tid)
                 logging.info(f"✅ 已推送TID：{tid}")
 
-    # 保存新推送的TID（调用正确的函数名save_sent_tids，关键修复2）
     if newly_pushed_tids:
         save_sent_tids(newly_pushed_tids, existing_tids)
     else:
@@ -305,7 +291,6 @@ async def check_for_updates():
 async def main():
     logging.info("===== 推送脚本启动 =====")
     
-    # 配置校验
     config_check = True
     if not SAFEW_BOT_TOKEN or ":" not in SAFEW_BOT_TOKEN:
         logging.error("❌ SAFEW_BOT_TOKEN格式无效")
@@ -320,7 +305,6 @@ async def main():
         logging.error("❌ 基础配置错误，脚本终止")
         return
 
-    # 执行推送
     try:
         await check_for_updates()
     except Exception as e:
