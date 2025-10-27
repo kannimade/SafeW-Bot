@@ -157,7 +157,7 @@ async def get_images_from_webpage(session, webpage_url):
 
 # ====================== Markdown特殊字符转义（不变）======================
 def escape_markdown(text):
-    special_chars = r"_*~`>#+!()"
+    special_chars = r"_*~`>#+!()@"
     for char in special_chars:
         if char in text:
             text = text.replace(char, f"\{char}")
@@ -329,7 +329,7 @@ async def check_for_updates():
             author_escaped = escape_markdown(author)
             caption = (
                 f"{title_escaped}\n"
-                f"由 \@{author_escaped} 发起的话题讨论\n"
+                f"由 @{author_escaped} 发起的话题讨论\n"
                 f"链接：{link}\n\n"
                 f"项目地址：{FIXED_PROJECT_URL}"
             )
